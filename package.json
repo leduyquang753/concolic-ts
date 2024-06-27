@@ -1,0 +1,6 @@
+{
+	"dependencies": {
+		"ts-morph": "^23.0.0",
+		"vitest": "^1.6.0"
+	}
+}

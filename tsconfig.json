@@ -12,7 +12,7 @@
 		"forceConsistentCasingInFileNames": true,
 		"skipLibCheck": true,
 		"paths": {
-			"~/*": ["./src/*"]
+			"#r/*": ["./src/*"]
 		}
 	}
 }

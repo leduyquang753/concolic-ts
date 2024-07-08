@@ -81,6 +81,23 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 			}
 			break;
 		}
+		case Ts.SyntaxKind.DoStatement: {
+			const doWhileTsNode = tsNode as Ts.DoStatement;
+			const doWhileConditionNode = new CfgNode(CfgNodeKind.CONDITION, doWhileTsNode);
+			const subCfg = generateCfgFromNode(doWhileTsNode.getStatement());
+			if (isEmptyCfg(subCfg)) {
+			    cfg.beginNode.primaryNext = doWhileConditionNode;
+			} else {
+			    cfg.beginNode.primaryNext = subCfg.beginNode;
+			    subCfg.escapeNode.primaryNext = cfg.escapeNode;
+			    subCfg.continueNode.primaryNext = doWhileConditionNode;
+			    subCfg.breakNode.primaryNext = cfg.endNode;
+			    subCfg.endNode.primaryNext = doWhileConditionNode;
+			}
+			doWhileConditionNode.primaryNext = cfg.beginNode.primaryNext;
+			doWhileConditionNode.secondaryNext = cfg.endNode;
+			break;
+		}
 		case Ts.SyntaxKind.ForInStatement:
 		case Ts.SyntaxKind.ForOfStatement: {
 			const forTsNode = tsNode as Ts.ForInStatement | Ts.ForOfStatement;

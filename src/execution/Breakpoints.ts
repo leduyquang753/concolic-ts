@@ -49,6 +49,13 @@ export function getBreakpointsFromCfgNode(cfgNode: CfgNode): Breakpoint[] {
 					{cfgNode, isSecondaryBranch: true, ...getNearestBreakableLocation(forNode)}
 				];
 			}
+			case Ts.SyntaxKind.DoStatement: {
+				const doNode = tsNode as Ts.DoStatement;
+				return [
+					{cfgNode, isSecondaryBranch: false, ...getLocationOfNode(doNode.getStatement())},
+					{cfgNode, isSecondaryBranch: true, ...getNearestBreakableLocation(doNode.getExpression())}
+				];
+			}
 			default: throw new Error("Unhandled condition node kind.");
 		}
 		case CfgNodeKind.FOR_EACH: {

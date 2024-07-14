@@ -86,13 +86,13 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 			const doWhileConditionNode = new CfgNode(CfgNodeKind.CONDITION, doWhileTsNode);
 			const subCfg = generateCfgFromNode(doWhileTsNode.getStatement());
 			if (isEmptyCfg(subCfg)) {
-			    cfg.beginNode.primaryNext = doWhileConditionNode;
+				cfg.beginNode.primaryNext = doWhileConditionNode;
 			} else {
-			    cfg.beginNode.primaryNext = subCfg.beginNode;
-			    subCfg.escapeNode.primaryNext = cfg.escapeNode;
-			    subCfg.continueNode.primaryNext = doWhileConditionNode;
-			    subCfg.breakNode.primaryNext = cfg.endNode;
-			    subCfg.endNode.primaryNext = doWhileConditionNode;
+				cfg.beginNode.primaryNext = subCfg.beginNode;
+				subCfg.escapeNode.primaryNext = cfg.escapeNode;
+				subCfg.continueNode.primaryNext = doWhileConditionNode;
+				subCfg.breakNode.primaryNext = cfg.endNode;
+				subCfg.endNode.primaryNext = doWhileConditionNode;
 			}
 			doWhileConditionNode.primaryNext = cfg.beginNode.primaryNext;
 			doWhileConditionNode.secondaryNext = cfg.endNode;
@@ -114,6 +114,48 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 				subCfg.breakNode.primaryNext = cfg.endNode;
 				subCfg.endNode.primaryNext = cfg.endNode;
 			}
+			break;
+		}
+		case Ts.SyntaxKind.SwitchStatement: {
+			const switchTsNode = tsNode as Ts.SwitchStatement;
+			let previousCaseNode: CfgNode | null = null;
+			let previousEndCaseNode: CfgNode | null = null;
+			for (const caseClause of switchTsNode.getCaseBlock().getClauses()) {
+				const caseCfgNode = new CfgNode(CfgNodeKind.CONDITION, caseClause);
+				if (previousCaseNode !== null) {
+					previousCaseNode.secondaryNext = caseCfgNode;
+				} else {
+					cfg.beginNode.primaryNext = caseCfgNode;
+				}
+				previousCaseNode = caseCfgNode;
+				const subCfg = generateCfgFromNode(caseClause);
+				if (previousEndCaseNode !== null) {
+					previousEndCaseNode.primaryNext = subCfg.beginNode;
+				}
+				caseCfgNode.primaryNext = subCfg.beginNode;
+				subCfg.escapeNode.primaryNext = cfg.escapeNode;
+				subCfg.breakNode.primaryNext = cfg.endNode;
+				previousEndCaseNode = subCfg.endNode;
+			}
+			if (previousEndCaseNode !== null)
+				previousEndCaseNode.primaryNext = cfg.endNode;
+			break;
+		}
+		case Ts.SyntaxKind.CaseClause:
+		case Ts.SyntaxKind.DefaultClause:
+			const caseTsNode = tsNode as Ts.CaseOrDefaultClause;
+			let lastCfgNode = cfg.beginNode;
+			for (const statement of caseTsNode.getStatements()) {
+				const subCfg = generateCfgFromNode(statement);
+				if (isEmptyCfg(subCfg)) continue;
+				lastCfgNode.primaryNext = subCfg.beginNode;
+				subCfg.escapeNode.primaryNext = cfg.escapeNode;
+				lastCfgNode = subCfg.endNode;
+			}
+			lastCfgNode.primaryNext = cfg.endNode;
+			break;
+		case Ts.SyntaxKind.BreakStatement: {
+			cfg.beginNode.primaryNext = cfg.breakNode;
 			break;
 		}
 		case Ts.SyntaxKind.ReturnStatement: {

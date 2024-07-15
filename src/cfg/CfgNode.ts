@@ -19,7 +19,7 @@ export default class CfgNode {
 		this.tsNode = tsNode;
 	}
 
-	isBranching(): boolean {
+	get isBranching(): boolean {
 		return isBranchingCfgNodeKind(this.kind);
 	}
 }

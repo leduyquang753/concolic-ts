@@ -1,7 +1,7 @@
 import * as Ts from "ts-morph";
 
+import type {Cfg} from "#r/cfg/Cfg";
 import {iterateCfg} from "#r/cfg/Cfg";
-import {generateCfgFromFunction} from "#r/cfg/CfgGenerator";
 import CfgNode from "#r/cfg/CfgNode";
 import CfgNodeKind from "#r/cfg/CfgNodeKind";
 
@@ -19,10 +19,9 @@ export type Breakpoint = {
 	column: number
 };
 
-export function getBreakpointsFromFunction(functionDeclaration: Ts.FunctionDeclaration): Breakpoint[] {
+export function getBreakpointsFromCfg(cfg: Cfg): Breakpoint[] {
 	const breakpoints: Breakpoint[] = [];
-	for (const cfgNode of iterateCfg(generateCfgFromFunction(functionDeclaration)))
-		breakpoints.push(...getBreakpointsFromCfgNode(cfgNode));
+	for (const cfgNode of iterateCfg(cfg)) breakpoints.push(...getBreakpointsFromCfgNode(cfgNode));
 	return breakpoints;
 }
 
@@ -36,11 +35,10 @@ export function getBreakpointsFromCfgNode(cfgNode: CfgNode): Breakpoint[] {
 				const elseNode = ifNode.getElseStatement();
 				return [
 					{cfgNode, isSecondaryBranch: false, ...getLocationOfNode(ifNode.getThenStatement())},
-					{cfgNode, isSecondaryBranch: true, ...(
-						elseNode === undefined
-						? getNearestBreakableLocation(ifNode)
-						: getLocationOfNode(elseNode)
-					)}
+					{
+						cfgNode, isSecondaryBranch: true,
+						...(elseNode === undefined ? getNearestBreakableLocation(ifNode) : getLocationOfNode(elseNode))
+					}
 				];
 			}
 			case Ts.SyntaxKind.ForStatement:
@@ -72,9 +70,6 @@ function getNearestBreakableLocation(tsNode: Ts.Node): Location {
 		if (parent === undefined || parent.getKind() === Ts.SyntaxKind.FunctionDeclaration)
 			throw new Error("Failed to find breakable location of node.");
 		switch (parent.getKind()) {
-			case Ts.SyntaxKind.Block:
-				candidate = parent.getChildren()[2];
-				break;
 			case Ts.SyntaxKind.ForStatement:
 			case Ts.SyntaxKind.ForInStatement:
 			case Ts.SyntaxKind.ForOfStatement:
@@ -91,6 +86,11 @@ function getNearestBreakableLocation(tsNode: Ts.Node): Location {
 }
 
 function getLocationOfNode(tsNode: Ts.Node): Location {
+	if (Ts.Node.isBlock(tsNode)) {
+		const statements = tsNode.getStatements();
+		if (statements.length === 0) throw new Error("Cannot handle empty block.");
+		return getLocationOfNode(statements[0]);
+	}
 	const sourceFile = tsNode.getSourceFile();
 	const lineAndColumn = sourceFile.getLineAndColumnAtPos(tsNode.getStart());
 	return {

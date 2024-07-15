@@ -11,7 +11,7 @@ enum CfgNodeKind {
 
 export default CfgNodeKind;
 
-const branchingNodeKinds = new Set([
+const branchingNodeKinds = new Set<CfgNodeKind>([
 	CfgNodeKind.CONDITION,
 	CfgNodeKind.FOR_EACH,
 ]);
@@ -20,7 +20,7 @@ export function isBranchingCfgNodeKind(kind: CfgNodeKind) {
 	return branchingNodeKinds.has(kind);
 }
 
-const ephemeralNodeKinds = new Set([
+const ephemeralNodeKinds = new Set<CfgNodeKind>([
 	CfgNodeKind.BEGIN,
 	CfgNodeKind.END,
 	CfgNodeKind.ESCAPE,

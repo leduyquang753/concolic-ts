@@ -1,0 +1,5 @@
+const config = {
+	pathToZ3: "<Path to the Z3 executable.>"
+};
+
+export default config;

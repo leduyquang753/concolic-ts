@@ -182,7 +182,8 @@ export default class Executor {
 			}
 		}
 		websocket.close();
-		console.log("Finished execution. Generating constraints...");
+		console.log("Finished execution.");
+		console.log("Branching series: " + newBranchingSeries.map(e => e.isSecondary ? '1' : '0').join(" "));
 		while (
 			newBranchingSeries.length !== 0
 			&& this.#coveredCfgNodeIds.has(newBranchingSeries[newBranchingSeries.length - 1].cfgNode.id)
@@ -191,10 +192,11 @@ export default class Executor {
 			branchingConditions.pop();
 		}
 		if (newBranchingSeries.length === 0) return null;
+		console.log("Generating constraints...");
 		const lastBranchIndex = newBranchingSeries.length - 1;
 		newBranchingSeries[lastBranchIndex].isSecondary = !newBranchingSeries[lastBranchIndex].isSecondary;
 		this.#coveredCfgNodeIds.add(newBranchingSeries[lastBranchIndex].cfgNode.id);
-		let smtString = "";
+		let smtString = "(set-option :pp.decimal true)\n";
 		for (const parameter of this.#functionDeclaration.getParameters())
 			smtString += `(declare-const ${parameter.getName()} Real)\n`;
 		for (let i = 0; i !== newBranchingSeries.length; ++i) {
@@ -211,7 +213,7 @@ export default class Executor {
 			`"${config.pathToZ3}" "${smtFilePath}"`, {cwd: this.#projectPath}
 		).toString();
 		if (smtString.substring(0, 3) !== "sat") throw new Error("Failed to solve constraints.");
-		return Object.fromEntries([...smtString.matchAll(/\(define-fun (\w+) \(\) Real[^\d]+([\d\.]+)\)/g)].map(
+		return Object.fromEntries([...smtString.matchAll(/\(define-fun (\w+) \(\) Real[^\d]+([\d\.]+)\??\)/g)].map(
 			entry => [entry[1], Number(entry[2])]
 		));
 	}

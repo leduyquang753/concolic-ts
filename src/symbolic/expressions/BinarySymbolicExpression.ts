@@ -2,6 +2,7 @@ import SymbolicExpression from "./SymbolicExpression";
 import SymbolicExpressionKind from "./SymbolicExpressionKind";
 
 const smtOperatorMapping: {[jsOperator: string]: string | undefined} = {
+	"**": "^",
 	"==": "=",
 	"===": "=",
 	"!=": "distinct",

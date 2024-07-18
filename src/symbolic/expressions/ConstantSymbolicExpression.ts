@@ -10,11 +10,16 @@ export default class ConstantSymbolicExpression extends SymbolicExpression {
 	}
 
 	override get smtString(): string {
-		if (typeof this.value === "number" && this.value < 0) return `(- ${-this.value})`;
-		return this.value.toString();
+		if (typeof this.value === "number" && this.value < 0) return `(- ${formatNumber(-this.value)})`;
+		return formatNumber(this.value);
 	}
 
 	override clone(): SymbolicExpression {
 		return new ConstantSymbolicExpression(structuredClone(this.value));
 	}
+}
+
+function formatNumber(n: number): string {
+	const s = n.toString();
+	return s.indexOf('.') === -1 ? s + ".0" : s;
 }

@@ -1,5 +1,6 @@
 import * as Ts from "ts-morph";
 
+import symbolicBuiltinClasses from "./builtins/SymbolicBuiltins";
 import BinarySymbolicExpression from "./expressions/BinarySymbolicExpression";
 import ConstantSymbolicExpression from "./expressions/ConstantSymbolicExpression";
 import SymbolicExpression from "./expressions/SymbolicExpression";
@@ -113,6 +114,26 @@ export default class SymbolicExecutor {
 				);
 				if (executeAssignments) this.variableTable.set(variableKey, newValueExpression);
 				return newValueExpression;
+			}
+			case Ts.SyntaxKind.CallExpression: {
+				const callExpression = expression as Ts.CallExpression;
+				const functionExpression = callExpression.getExpression();
+				if (!Ts.Node.isPropertyAccessExpression(functionExpression))
+					throw new Error("Call expression's function expression is too complex.");
+				const functionContainerExpression = functionExpression.getExpression();
+				if (!Ts.Node.isIdentifier(functionContainerExpression))
+					throw new Error("Call expression's function expression is too complex.");
+				const className = functionContainerExpression.getSymbol()!.getFullyQualifiedName();
+				const builtinClass = symbolicBuiltinClasses[className];
+				if (builtinClass === undefined)
+					throw new Error(`Call expression's function source ${className} is not supported yet.`);
+				const builtinFunction = builtinClass[functionExpression.getName()];
+				if (builtinFunction === undefined) throw new Error(
+					`Built-in class ${className} does not have function ${functionExpression.getName()}.`
+				);
+				return builtinFunction(
+					callExpression.getArguments().map(argument => this.evaluateExpression(argument as Ts.Expression))
+				);
 			}
 			default:
 				throw new Error(`Expression kind ${expression.getKindName()} is not yet supported.`);

@@ -184,38 +184,48 @@ export default class Executor {
 		websocket.close();
 		console.log("Finished execution.");
 		console.log("Branching series: " + newBranchingSeries.map(e => e.isSecondary ? '1' : '0').join(" "));
-		while (
-			newBranchingSeries.length !== 0
-			&& this.#coveredCfgNodeIds.has(newBranchingSeries[newBranchingSeries.length - 1].cfgNode.id)
-		) {
-			newBranchingSeries.pop();
-			branchingConditions.pop();
+		while (true) {
+			while (
+				newBranchingSeries.length !== 0
+				&& this.#coveredCfgNodeIds.has(newBranchingSeries[newBranchingSeries.length - 1].cfgNode.id)
+			) {
+				newBranchingSeries.pop();
+				branchingConditions.pop();
+			}
+			if (newBranchingSeries.length === 0) return null;
+			console.log("Generating constraints...");
+			const lastBranchIndex = newBranchingSeries.length - 1;
+			newBranchingSeries[lastBranchIndex].isSecondary = !newBranchingSeries[lastBranchIndex].isSecondary;
+			this.#coveredCfgNodeIds.add(newBranchingSeries[lastBranchIndex].cfgNode.id);
+			let smtString = "(set-option :pp.decimal true)\n";
+			for (const parameter of this.#functionDeclaration.getParameters())
+				smtString += `(declare-const ${parameter.getName()} Real)\n`;
+			for (let i = 0; i !== newBranchingSeries.length; ++i) {
+				const condition = newBranchingSeries[i].isSecondary
+					? new UnarySymbolicExpression("!", branchingConditions[i])
+					: branchingConditions[i];
+				smtString += `(assert ${condition.smtString})\n`;
+			}
+			smtString += "(check-sat-using qfnra-nlsat)\n(get-model)\n";
+			const smtFilePath = Path.join(this.#projectPath, "smt.txt");
+			FileSystem.writeFileSync(smtFilePath, smtString, "utf8");
+			console.log("Solving constraints...");
+			smtString = await new Promise(resolve => { ChildProcess.exec(
+				`"${config.pathToZ3}" "${smtFilePath}"`, {cwd: this.#projectPath},
+				(error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => {
+					resolve(stdout.toString());
+				}
+			); });
+			if (smtString.substring(0, 5) === "unsat") {
+				console.log("No input satisfies the constraints for the new path. Generating a new one.");
+				continue;
+			} else if (smtString.substring(0, 3) !== "sat") {
+				throw new Error("Failed to solve constraints.");
+			}
+			return Object.fromEntries([...smtString.matchAll(/\(define-fun (\w+) \(\) Real[^\d]+([\d\.]+)\??\)/g)].map(
+				entry => [entry[1], Number(entry[2])]
+			));
 		}
-		if (newBranchingSeries.length === 0) return null;
-		console.log("Generating constraints...");
-		const lastBranchIndex = newBranchingSeries.length - 1;
-		newBranchingSeries[lastBranchIndex].isSecondary = !newBranchingSeries[lastBranchIndex].isSecondary;
-		this.#coveredCfgNodeIds.add(newBranchingSeries[lastBranchIndex].cfgNode.id);
-		let smtString = "(set-option :pp.decimal true)\n";
-		for (const parameter of this.#functionDeclaration.getParameters())
-			smtString += `(declare-const ${parameter.getName()} Real)\n`;
-		for (let i = 0; i !== newBranchingSeries.length; ++i) {
-			const condition = newBranchingSeries[i].isSecondary
-				? new UnarySymbolicExpression("!", branchingConditions[i])
-				: branchingConditions[i];
-			smtString += `(assert ${condition.smtString})\n`;
-		}
-		smtString += "(check-sat)\n(get-model)\n";
-		const smtFilePath = Path.join(this.#projectPath, "smt.txt");
-		FileSystem.writeFileSync(smtFilePath, smtString, "utf8");
-		console.log("Solving constraints...");
-		smtString = ChildProcess.execSync(
-			`"${config.pathToZ3}" "${smtFilePath}"`, {cwd: this.#projectPath}
-		).toString();
-		if (smtString.substring(0, 3) !== "sat") throw new Error("Failed to solve constraints.");
-		return Object.fromEntries([...smtString.matchAll(/\(define-fun (\w+) \(\) Real[^\d]+([\d\.]+)\??\)/g)].map(
-			entry => [entry[1], Number(entry[2])]
-		));
 	}
 
 	#generateDriverScript(input: any): void {

@@ -1,7 +1,19 @@
+import BinarySymbolicExpression from "./BinarySymbolicExpression";
+import ConstantSymbolicExpression from "./ConstantSymbolicExpression";
 import SymbolicExpression from "./SymbolicExpression";
 import SymbolicExpressionKind from "./SymbolicExpressionKind";
 
-const smtOperatorMapping: {[jsOperator: string]: string | undefined} = {
+const inverseOperatorMap: {[operator: string]: string} = {
+	"<": ">=",
+	">": "<=",
+	"<=": ">",
+	">=": "<",
+	"==": "!==",
+	"===": "!==",
+	"!=": "===",
+	"!==": "==="
+};
+const smtOperatorMap: {[jsOperator: string]: string | undefined} = {
 	"!": "not"
 };
 
@@ -15,13 +27,29 @@ export default class UnarySymbolicExpression extends SymbolicExpression {
 		this.operand = operand;
 	}
 
-	override trySimplify(): SymbolicExpression {
-		if (this.operator === "+") return this.operand;
+	override trySimplify(recurse: boolean): SymbolicExpression {
+		let simplifiedOperand = recurse ? this.operand.trySimplify(recurse) : this.operand;
+		if (this.operator === "+") return simplifiedOperand;
+		if (simplifiedOperand.kind === SymbolicExpressionKind.CONSTANT) {
+			let constantOperand = simplifiedOperand as ConstantSymbolicExpression;
+			if (this.operator === "-") return new ConstantSymbolicExpression(-constantOperand.value);
+			if (this.operator === "!") return new ConstantSymbolicExpression(!constantOperand.value);
+		}
+		if (this.operator === "!") {
+			if (simplifiedOperand.kind === SymbolicExpressionKind.BINARY) {
+				const binaryExpression = simplifiedOperand as BinarySymbolicExpression;
+				const invertedOperator = inverseOperatorMap[binaryExpression.operator];
+				if (invertedOperator !== undefined) return new BinarySymbolicExpression(
+					invertedOperator, binaryExpression.leftOperand, binaryExpression.rightOperand
+				);
+            }
+        }
+        this.operand = simplifiedOperand;
 		return this;
 	}
 
 	override get smtString(): string {
-		return `(${smtOperatorMapping[this.operator] ?? this.operator} ${this.operand.smtString})`;
+		return `(${smtOperatorMap[this.operator] ?? this.operator} ${this.operand.smtString})`;
 	}
 
 	override clone(): SymbolicExpression {

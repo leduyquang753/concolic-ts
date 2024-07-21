@@ -7,7 +7,7 @@ abstract class SymbolicExpression {
 		this.kind = kind;
 	}
 
-	trySimplify(): SymbolicExpression {
+	trySimplify(recurse: boolean): SymbolicExpression {
 		return this;
 	}
 

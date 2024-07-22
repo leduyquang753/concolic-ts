@@ -10,8 +10,11 @@ export default class ConstantSymbolicExpression extends SymbolicExpression {
 	}
 
 	override get smtString(): string {
-		if (typeof this.value === "number" && this.value < 0) return `(- ${formatNumber(-this.value)})`;
-		return formatNumber(this.value);
+		if (typeof this.value === "number") {
+			if (this.value < 0) return `(- ${formatNumber(-this.value)})`;
+			return formatNumber(this.value);
+		}
+		return this.value.toString();
 	}
 
 	override clone(): SymbolicExpression {

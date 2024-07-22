@@ -115,6 +115,17 @@ export default class SymbolicExecutor {
 				if (executeAssignments) this.variableTable.set(variableKey, newValueExpression);
 				return newValueExpression;
 			}
+			case Ts.SyntaxKind.ConditionalExpression: {
+				const conditionalExpression = expression as Ts.ConditionalExpression;
+				const conditionValue = this.evaluateExpression(conditionalExpression.getCondition());
+				if (conditionValue.kind !== SymbolicExpressionKind.CONSTANT)
+					throw new Error("Conditional expression's condition is too complex.");
+				return this.evaluateExpression(
+					(conditionValue as ConstantSymbolicExpression).value
+						? conditionalExpression.getWhenTrue()
+						: conditionalExpression.getWhenFalse()
+				);
+			}
 			case Ts.SyntaxKind.CallExpression: {
 				const callExpression = expression as Ts.CallExpression;
 				const functionExpression = callExpression.getExpression();

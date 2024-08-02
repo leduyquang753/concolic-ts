@@ -18,7 +18,7 @@ export default class BinarySymbolicExpression extends SymbolicExpression {
 	rightOperand: SymbolicExpression;
 
 	constructor(operator: string, leftOperand: SymbolicExpression, rightOperand: SymbolicExpression) {
-		super(SymbolicExpressionKind.UNARY);
+		super(SymbolicExpressionKind.BINARY);
 		this.operator = operator;
 		this.leftOperand = leftOperand;
 		this.rightOperand = rightOperand;

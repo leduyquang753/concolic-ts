@@ -183,7 +183,10 @@ export default class Executor {
 		}
 		websocket.close();
 		console.log("Finished execution.");
-		console.log("Branching series: " + newBranchingSeries.map(e => e.isSecondary ? '1' : '0').join(" "));
+		console.log("Branching series: " + newBranchingSeries.map(e => e.isSecondary ? '0' : '1').join(" "));
+		if (this.#currentBranchingSeries.length !== 0) this.#coveredCfgNodeIds.add(
+			this.#currentBranchingSeries[this.#currentBranchingSeries.length - 1].cfgNode.id
+		);
 		while (true) {
 			while (
 				newBranchingSeries.length !== 0
@@ -196,7 +199,6 @@ export default class Executor {
 			console.log("Generating constraints...");
 			const lastBranchIndex = newBranchingSeries.length - 1;
 			newBranchingSeries[lastBranchIndex].isSecondary = !newBranchingSeries[lastBranchIndex].isSecondary;
-			this.#coveredCfgNodeIds.add(newBranchingSeries[lastBranchIndex].cfgNode.id);
 			let smtString = "(set-option :pp.decimal true)\n";
 			for (const parameter of this.#functionDeclaration.getParameters())
 				smtString += `(declare-const ${parameter.getName()} Real)\n`;
@@ -218,12 +220,17 @@ export default class Executor {
 			); });
 			if (smtString.substring(0, 5) === "unsat") {
 				console.log("No input satisfies the constraints for the new path. Generating a new one.");
+				newBranchingSeries.pop();
+				branchingConditions.pop();
 				continue;
 			} else if (smtString.substring(0, 3) !== "sat") {
 				throw new Error("Failed to solve constraints.");
 			}
-			return Object.fromEntries([...smtString.matchAll(/\(define-fun (\w+) \(\) Real[^\d]+([\d\.]+)\??\)/g)].map(
-				entry => [entry[1], Number(entry[2])]
+			this.#currentBranchingSeries = newBranchingSeries;
+			return Object.fromEntries([...smtString.matchAll(
+				/\(define-fun (\w+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
+			)].map(
+				entry => [entry[1], Number(entry[2].replaceAll(" ", ""))]
 			));
 		}
 	}

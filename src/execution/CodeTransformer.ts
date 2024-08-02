@@ -1,27 +1,10 @@
 import * as Ts from "ts-morph";
 
-const GENERATED_VARIABLE_PREFIX = "__concolic$";
+let nextGeneratedVariableId = 0;
 
-type BooleanExpression = {
-	isBinary: boolean,
-	expression: BinaryBooleanExpression | Ts.Expression
-};
-type BinaryBooleanExpression = {
-	operator: string,
-	leftOperand: BooleanExpression,
-	rightOperand: BooleanExpression
-};
-
-function decomposeBooleanExpression(expression: Ts.Expression): BooleanExpression {
-	if (Ts.Node.isParenthesizedExpression(expression)) return decomposeBooleanExpression(expression.getExpression());
-	if (!Ts.Node.isBinaryExpression(expression)) return {isBinary: false, expression};
-	const operator = expression.getOperatorToken().getText();
-	if (operator === "&&" || operator === "||") return {isBinary: true, expression: {
-		operator,
-		leftOperand: decomposeBooleanExpression(expression.getLeft()),
-		rightOperand: decomposeBooleanExpression(expression.getRight())
-	}};
-	else return {isBinary: false, expression};
+function generateVariableName() {
+	++nextGeneratedVariableId;
+	return `__concolic\$${nextGeneratedVariableId}`;
 }
 
 function ensureCodeBlock(code: string, isStandalone: boolean): string {
@@ -97,9 +80,18 @@ export function transformStatement(statement: Ts.Statement, isStandalone: boolea
 		}
 		case Ts.SyntaxKind.IfStatement: {
 			const ifStatement = statement as Ts.IfStatement;
-			transformStatement(ifStatement.getThenStatement(), true);
+			const thenStatement = ifStatement.getThenStatement();
+			transformStatement(thenStatement, true);
 			const elseStatement = ifStatement.getElseStatement();
 			if (elseStatement !== undefined) transformStatement(elseStatement, true);
+			const extractedCondition = extractConditionalExpression(ifStatement.getExpression());
+			if (extractedCondition === null) break;
+			ifStatement.replaceWithText(ensureCodeBlock(
+				extractedCondition.precedingCode
+				+ `if (${extractedCondition.newExpression}) ${thenStatement.getText()}`
+				+ (elseStatement === undefined ? "\n" : ` else ${elseStatement.getText()}\n`),
+				isStandalone
+			));
 			break;
 		}
 	}
@@ -108,40 +100,134 @@ export function transformStatement(statement: Ts.Statement, isStandalone: boolea
 function extractConditionalExpression(
 	expression: Ts.Expression
 ): {precedingCode: string, newExpression: string} | null {
-	if (
-		!Ts.Node.isConditionalExpression(expression)
-		|| expression.getCondition().getText().startsWith(GENERATED_VARIABLE_PREFIX)
-	) return null;
-	const generatedVariableName = GENERATED_VARIABLE_PREFIX + expression.getStart();
-	return {
-		precedingCode:
-			`let ${generatedVariableName} = false;\n`
-			+ emitCondition(
-				decomposeBooleanExpression(expression.getCondition()),
-				`${generatedVariableName} = true;`, `${generatedVariableName} = false;`
-			) + '\n',
-		newExpression:
-			`${generatedVariableName} `
-			+ `? ${expression.getWhenTrue().getText()} `
-			+ `: ${expression.getWhenFalse().getText()}`
-	};
-}
-
-function emitCondition(booleanExpression: BooleanExpression, passingCode: string, failingCode: string): string {
-	if (!booleanExpression.isBinary) return (
-		`if (${(booleanExpression.expression as Ts.Expression).getText()}) {\n${passingCode}\n`
-		+ `} else {\n${failingCode}\n}`
-	);
-	const binaryExpression = booleanExpression.expression as BinaryBooleanExpression;
-	if (binaryExpression.operator === "||") return emitCondition(
-		binaryExpression.leftOperand,
-		passingCode,
-		emitCondition(binaryExpression.rightOperand, passingCode, failingCode)
-	);
-	if (binaryExpression.operator === "&&") return emitCondition(
-		binaryExpression.leftOperand,
-		emitCondition(binaryExpression.rightOperand, passingCode, failingCode),
-		failingCode
-	);
-	throw new Error(`Unexpected binary boolean expression operator \`${binaryExpression.operator}\`.`);
+	switch (expression.getKind()) {
+		case Ts.SyntaxKind.ParenthesizedExpression: {
+			const parenthesizedExpression = expression as Ts.ParenthesizedExpression;
+			const extracted = extractConditionalExpression(parenthesizedExpression.getExpression());
+			return extracted === null ? null : {
+				precedingCode: extracted === null ? "" : extracted.precedingCode,
+				newExpression: (
+					"("
+					+ (extracted === null ? parenthesizedExpression.getExpression().getText() : extracted.newExpression)
+					+ ")"
+				)
+			};
+		}
+		case Ts.SyntaxKind.PrefixUnaryExpression: {
+			const unaryExpression = expression as Ts.PrefixUnaryExpression;
+			const extracted = extractConditionalExpression(unaryExpression.getOperand());
+			return extracted === null ? null : {
+				precedingCode: extracted === null ? "" : extracted.precedingCode,
+				newExpression: (
+					Ts.ts.tokenToString(unaryExpression.getOperatorToken())
+					+ (extracted === null ? unaryExpression.getOperand().getText() : extracted.newExpression)
+				)
+			};
+		}
+		case Ts.SyntaxKind.PostfixUnaryExpression: {
+			const unaryExpression = expression as Ts.PostfixUnaryExpression;
+			const extracted = extractConditionalExpression(unaryExpression.getOperand());
+			return extracted === null ? null : {
+				precedingCode: extracted === null ? "" : extracted.precedingCode,
+				newExpression: (
+					(extracted === null ? unaryExpression.getOperand().getText() : extracted.newExpression)
+					+ Ts.ts.tokenToString(unaryExpression.getOperatorToken())
+				)
+			};
+		}
+		case Ts.SyntaxKind.BinaryExpression: {
+			const binaryExpression = expression as Ts.BinaryExpression;
+			const extractedLeft = extractConditionalExpression(binaryExpression.getLeft());
+			const extractedRight = extractConditionalExpression(binaryExpression.getRight());
+			const operator = binaryExpression.getOperatorToken().getText();
+			if (operator === "&&") {
+				const generatedVariableName = generateVariableName();
+				return {
+					precedingCode: (
+						(extractedLeft === null ? "" : extractedLeft.precedingCode)
+						+ `let ${generatedVariableName}: ${binaryExpression.getType().getText()} = ${
+							extractedLeft === null
+							? binaryExpression.getLeft().getText() : extractedLeft.newExpression
+						};\n`
+						+ `if (${generatedVariableName}) {\n`
+						+ (extractedRight === null ? "" : extractedRight.precedingCode)
+						+ `${generatedVariableName} = ${
+							extractedRight === null
+							? binaryExpression.getRight().getText() : extractedRight.newExpression
+						};\n`
+						+ "} else {\n"
+						+ `${generatedVariableName} = ${generatedVariableName};\n`
+						+ "}\n"
+					),
+					newExpression: generatedVariableName
+				};
+			}
+			if (operator === "||") {
+				const generatedVariableName = generateVariableName();
+				return {
+					precedingCode: (
+						(extractedLeft === null ? "" : extractedLeft.precedingCode)
+						+ `let ${generatedVariableName}: ${binaryExpression.getType().getText()} = ${
+							extractedLeft === null
+							? binaryExpression.getLeft().getText() : extractedLeft.newExpression
+						};\n`
+						+ `if (${generatedVariableName}) {\n`
+						+ `${generatedVariableName} = ${generatedVariableName};\n`
+						+ "} else {\n"
+						+ (extractedRight === null ? "" : extractedRight.precedingCode)
+						+ `${generatedVariableName} = ${
+							extractedRight === null
+							? binaryExpression.getRight().getText() : extractedRight.newExpression
+						};\n`
+						+ "}\n"
+					),
+					newExpression: generatedVariableName
+				};
+			}
+			return extractedLeft === null && extractedRight === null ? null : {
+				precedingCode: (
+					(extractedLeft === null ? "" : extractedLeft.precedingCode)
+					+ (extractedRight === null ? "" : extractedRight.precedingCode)
+				),
+				newExpression: (
+					(extractedLeft === null ? binaryExpression.getLeft().getText() : extractedLeft.newExpression)
+					+ binaryExpression.getOperatorToken().getText()
+					+ (extractedRight === null ? binaryExpression.getRight().getText() : extractedRight.newExpression)
+				)
+			};
+		}
+		case Ts.SyntaxKind.ConditionalExpression: {
+			const conditionalExpression = expression as Ts.ConditionalExpression;
+			const extractedCondition = extractConditionalExpression(conditionalExpression.getCondition());
+			const extractedTrueExpression = extractConditionalExpression(conditionalExpression.getWhenTrue());
+			const extractedFalseExpression = extractConditionalExpression(conditionalExpression.getWhenFalse());
+			const generatedVariableName = generateVariableName();
+			return {
+				precedingCode: (
+					(extractedCondition === null ? "" : extractedCondition.precedingCode)
+					+ `let ${generatedVariableName}: ${conditionalExpression.getType().getText()};\n`
+					+ `if (${
+						extractedCondition === null
+						? conditionalExpression.getCondition().getText() : extractedCondition.newExpression
+					}) {\n`
+					+ (
+						extractedTrueExpression === null
+						? `${generatedVariableName} = ${conditionalExpression.getWhenTrue().getText()};\n`
+						: extractedTrueExpression.precedingCode
+							+ `${generatedVariableName} = ${extractedTrueExpression.newExpression};\n`
+					)
+					+ "} else {\n"
+					+ (
+						extractedFalseExpression === null
+						? `${generatedVariableName} = ${conditionalExpression.getWhenFalse().getText()};\n`
+						: extractedFalseExpression.precedingCode
+							+ `${generatedVariableName} = ${extractedFalseExpression.newExpression};\n`
+					)
+					+ "}\n"
+				),
+				newExpression: generatedVariableName
+			};
+		};
+	}
+	return null;
 }

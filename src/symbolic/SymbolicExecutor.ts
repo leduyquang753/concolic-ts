@@ -5,6 +5,7 @@ import BinarySymbolicExpression from "./expressions/BinarySymbolicExpression";
 import ConstantSymbolicExpression from "./expressions/ConstantSymbolicExpression";
 import SymbolicExpression from "./expressions/SymbolicExpression";
 import SymbolicExpressionKind from "./expressions/SymbolicExpressionKind";
+import TernarySymbolicExpression from "./expressions/TernarySymbolicExpression";
 import UnarySymbolicExpression from "./expressions/UnarySymbolicExpression";
 import VariableSymbolicExpression from "./expressions/VariableSymbolicExpression";
 
@@ -117,13 +118,10 @@ export default class SymbolicExecutor {
 			}
 			case Ts.SyntaxKind.ConditionalExpression: {
 				const conditionalExpression = expression as Ts.ConditionalExpression;
-				const conditionValue = this.evaluateExpression(conditionalExpression.getCondition());
-				if (conditionValue.kind !== SymbolicExpressionKind.CONSTANT)
-					throw new Error("Conditional expression's condition is too complex.");
-				return this.evaluateExpression(
-					(conditionValue as ConstantSymbolicExpression).value
-						? conditionalExpression.getWhenTrue()
-						: conditionalExpression.getWhenFalse()
+				return new TernarySymbolicExpression(
+					this.evaluateExpression(conditionalExpression.getCondition()),
+					this.evaluateExpression(conditionalExpression.getWhenTrue()),
+					this.evaluateExpression(conditionalExpression.getWhenFalse())
 				);
 			}
 			case Ts.SyntaxKind.CallExpression: {

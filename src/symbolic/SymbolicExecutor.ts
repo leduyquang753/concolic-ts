@@ -9,6 +9,11 @@ import TernarySymbolicExpression from "./expressions/TernarySymbolicExpression";
 import UnarySymbolicExpression from "./expressions/UnarySymbolicExpression";
 import VariableSymbolicExpression from "./expressions/VariableSymbolicExpression";
 
+type FunctionCall = {
+	scopeLevel: number,
+	returnValueKey: string
+};
+
 const assignmentOperatorMap: {[assignmentOperator: string]: string | undefined} = {
 	"=": "=",
 	"+=": "+",
@@ -31,6 +36,7 @@ const assignmentOperatorMap: {[assignmentOperator: string]: string | undefined} 
 export default class SymbolicExecutor {
 	variableTable: Map<string, SymbolicExpression> = new Map<string, SymbolicExpression>();
 	scopeStack: string[][] = [];
+	functionCalls: FunctionCall[] = [];
 
 	addParametersFromFunctionDeclaration(functionDeclaration: Ts.FunctionDeclaration): void {
 		for (const parameterDeclaration of functionDeclaration.getParameters()) this.variableTable.set(
@@ -47,28 +53,59 @@ export default class SymbolicExecutor {
 		for (const key of this.scopeStack.pop()!) this.variableTable.delete(key);
 	}
 
-	addVariable(key: string, value: SymbolicExpression) {
+	addVariable(key: string, value: SymbolicExpression): void {
 		this.variableTable.set(key, value);
 		this.scopeStack[this.scopeStack.length - 1].push(key);
 	}
 
-	executeStatement(statement: Ts.Statement): void {
-		switch (statement.getKind()) {
-			case Ts.SyntaxKind.VariableStatement: {
-				for (const variableDeclaration of (statement as Ts.VariableStatement).getDeclarations()) {
-					const initializer = variableDeclaration.getInitializer();
-					this.addVariable(
-						makeVariableKey(variableDeclaration.getName(), variableDeclaration),
-						initializer === undefined
-							? new ConstantSymbolicExpression(undefined)
-							: this.evaluateExpression(initializer)
-					);
-				}
+	prepareFunctionCall(calledFunction: Ts.FunctionDeclaration, callExpression: Ts.CallExpression): void {
+		this.functionCalls.push({
+			scopeLevel: this.scopeStack.length, returnValueKey: makeVariableKey("[call]", callExpression)
+		});
+		this.startScope();
+		const parameters = calledFunction.getParameters();
+		const callArguments = callExpression.getArguments();
+		const argumentCount = callArguments.length;
+		if (argumentCount !== parameters.length)
+			throw new Error("Parameter and argument list not matching in length are not supported yet.");
+		for (let i = 0; i !== argumentCount; ++i) this.addVariable(
+			makeVariableKey(parameters[i].getName(), parameters[i]),
+			this.evaluateExpression(callArguments[i] as Ts.Expression, true)
+		);
+	}
+
+	executeNode(tsNode: Ts.Node): void {
+		switch (tsNode.getKind()) {
+			case Ts.SyntaxKind.Block:
+				this.startScope();
+				break;
+			case Ts.SyntaxKind.CloseBraceToken:
+				this.endScope();
+				break;
+			case Ts.SyntaxKind.VariableDeclaration: {
+				const variableDeclaration = tsNode as Ts.VariableDeclaration;
+				const initializer = variableDeclaration.getInitializer();
+				this.addVariable(
+					makeVariableKey(variableDeclaration.getName(), variableDeclaration),
+					initializer === undefined
+						? new ConstantSymbolicExpression(undefined)
+						: this.evaluateExpression(initializer)
+				);
 				break;
 			}
 			case Ts.SyntaxKind.ExpressionStatement:
-				this.evaluateExpression((statement as Ts.ExpressionStatement).getExpression(), true);
+				this.evaluateExpression((tsNode as Ts.ExpressionStatement).getExpression(), true);
 				break;
+			case Ts.SyntaxKind.ReturnStatement: {
+				const returnExpression = (tsNode as Ts.ReturnStatement).getExpression();
+				let returnSymbolicExpression: SymbolicExpression | null
+					= returnExpression === undefined ? null : this.evaluateExpression(returnExpression, true);
+				const functionCall = this.functionCalls.pop()!;
+				while (this.scopeStack.length !== functionCall.scopeLevel) this.endScope();
+				if (returnSymbolicExpression !== null)
+					this.addVariable(functionCall.returnValueKey, returnSymbolicExpression);
+				break;
+			}
 		}
 	}
 
@@ -126,6 +163,12 @@ export default class SymbolicExecutor {
 			}
 			case Ts.SyntaxKind.CallExpression: {
 				const callExpression = expression as Ts.CallExpression;
+				const returnValueKey = makeVariableKey("[call]", callExpression);
+				if (this.variableTable.has(returnValueKey)) {
+					const value = this.variableTable.get(returnValueKey)!;
+					this.variableTable.delete(returnValueKey);
+					return value;
+				}
 				const functionExpression = callExpression.getExpression();
 				if (!Ts.Node.isPropertyAccessExpression(functionExpression))
 					throw new Error("Call expression's function expression is too complex.");

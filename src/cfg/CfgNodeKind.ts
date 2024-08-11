@@ -7,13 +7,14 @@ enum CfgNodeKind {
 	STRAIGHT,
 	CONDITION,
 	FOR_EACH,
+	CALL
 }
 
 export default CfgNodeKind;
 
 const branchingNodeKinds = new Set<CfgNodeKind>([
 	CfgNodeKind.CONDITION,
-	CfgNodeKind.FOR_EACH,
+	CfgNodeKind.FOR_EACH
 ]);
 
 export function isBranchingCfgNodeKind(kind: CfgNodeKind) {

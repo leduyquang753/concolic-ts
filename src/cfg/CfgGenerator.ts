@@ -1,5 +1,6 @@
 import * as Ts from "ts-morph";
 
+import symbolicBuiltinClasses from "#r/symbolic/builtins/SymbolicBuiltins";
 import type {Cfg} from "./Cfg";
 import {isEmptyCfg} from "./Cfg";
 import CfgNode from "./CfgNode";
@@ -21,6 +22,7 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 	};
 	cfg.beginNode.primaryNext = cfg.endNode;
 	switch (tsNode.getKind()) {
+		// Statements.
 		case Ts.SyntaxKind.Block: {
 			let blockTsNode = tsNode as Ts.Block;
 			cfg.beginNode.tsNode = blockTsNode.getChildren()[0];
@@ -38,8 +40,10 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 		}
 		case Ts.SyntaxKind.IfStatement: {
 			const ifTsNode = tsNode as Ts.IfStatement;
+			const conditionSubCfg = generateCfgFromNode(ifTsNode.getExpression());
+			cfg.beginNode.primaryNext = conditionSubCfg.beginNode;
 			const ifCfgNode = new CfgNode(CfgNodeKind.CONDITION, ifTsNode);
-			cfg.beginNode.primaryNext = ifCfgNode;
+			conditionSubCfg.endNode.primaryNext = ifCfgNode;
 			const thenSubCfg = generateCfgFromNode(ifTsNode.getThenStatement());
 			if (isEmptyCfg(thenSubCfg)) {
 				ifCfgNode.primaryNext = cfg.endNode;
@@ -159,7 +163,72 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 			break;
 		}
 		case Ts.SyntaxKind.ReturnStatement: {
-			cfg.beginNode.primaryNext = cfg.escapeNode;
+			const expression = (tsNode as Ts.ReturnStatement).getExpression();
+			if (expression === undefined) {
+				cfg.beginNode.primaryNext = cfg.escapeNode;
+				break;
+			}
+			const expressionSubCfg = generateCfgFromNode(expression);
+			if (isEmptyCfg(expressionSubCfg)) {
+				cfg.beginNode.primaryNext = cfg.escapeNode;
+			} else {
+				cfg.beginNode.primaryNext = expressionSubCfg.beginNode;
+				expressionSubCfg.endNode.primaryNext = cfg.escapeNode;
+			}
+			break;
+		}
+		case Ts.SyntaxKind.VariableStatement: {
+			let lastCfgNode = cfg.beginNode;
+			for (const variableDeclaration of (tsNode as Ts.VariableStatement).getDeclarations()) {
+				const initializer = variableDeclaration.getInitializer();
+				if (initializer === undefined) continue;
+				const initializerSubCfg = generateCfgFromNode(initializer);
+				if (isEmptyCfg(initializerSubCfg)) continue;
+				lastCfgNode.primaryNext = initializerSubCfg.beginNode;
+				lastCfgNode = initializerSubCfg.endNode;
+			}
+			lastCfgNode.primaryNext = cfg.endNode;
+			break;
+		}
+		case Ts.SyntaxKind.ExpressionStatement:
+			return generateCfgFromNode((tsNode as Ts.ExpressionStatement).getExpression());
+
+		// Expressions.
+		case Ts.SyntaxKind.PrefixUnaryExpression:
+		case Ts.SyntaxKind.PostfixUnaryExpression:
+			return generateCfgFromNode((tsNode as Ts.PrefixUnaryExpression | Ts.PostfixUnaryExpression).getOperand());
+		case Ts.SyntaxKind.BinaryExpression: {
+			const binaryExpression = tsNode as Ts.BinaryExpression;
+			const leftSubCfg = generateCfgFromNode(binaryExpression.getLeft());
+			const rightSubCfg = generateCfgFromNode(binaryExpression.getLeft());
+			cfg.beginNode.primaryNext = leftSubCfg.beginNode;
+			leftSubCfg.endNode.primaryNext = rightSubCfg.beginNode;
+			rightSubCfg.endNode.primaryNext = cfg.endNode;
+			break;
+		}
+		case Ts.SyntaxKind.CallExpression: {
+			const callExpression = tsNode as Ts.CallExpression;
+			const functionExpression = callExpression.getExpression();
+			if (Ts.Node.isPropertyAccessExpression(functionExpression)) {
+				const functionContainerExpression = functionExpression.getExpression();
+				if (Ts.Node.isIdentifier(functionContainerExpression)) {
+					const className = functionContainerExpression.getSymbol()!.getFullyQualifiedName();
+					const builtinClass = symbolicBuiltinClasses[className];
+					if (builtinClass !== undefined && builtinClass[functionExpression.getName()] !== undefined) break;
+				}
+			}
+			const functionSubCfg = generateCfgFromNode(functionExpression);
+			cfg.beginNode.primaryNext = functionSubCfg.beginNode;
+			let lastCfgNode = functionSubCfg.endNode;
+			for (const argument of callExpression.getArguments()) {
+				const argumentSubCfg = generateCfgFromNode(argument);
+				if (isEmptyCfg(argumentSubCfg)) continue;
+				lastCfgNode.primaryNext = argumentSubCfg.beginNode;
+				lastCfgNode = argumentSubCfg.endNode;
+			}
+			const callCfgNode = new CfgNode(CfgNodeKind.CALL, tsNode);
+			lastCfgNode.primaryNext = callCfgNode;
+			callCfgNode.primaryNext = cfg.endNode;
 			break;
 		}
 	}

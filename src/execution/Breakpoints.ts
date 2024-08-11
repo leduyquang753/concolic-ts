@@ -72,6 +72,16 @@ export function getBreakpointsFromCfgNode(cfgNode: CfgNode): Breakpoint[] {
 				{cfgNode, isSecondaryBranch: true, ...getNearestBreakableLocation(forNode)}
 			];
 		}
+		/*
+		case CfgNodeKind.CALL: {
+			const functionExpression = (tsNode as Ts.CallExpression).getExpression();
+			return [{cfgNode, isSecondaryBranch: false, ...getLocationOfNode(
+				Ts.Node.isPropertyAccessExpression(functionExpression)
+					? functionExpression.getNameNode()
+					: functionExpression
+			)}];
+		}
+		*/
 	}
 	return [];
 }

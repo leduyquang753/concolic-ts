@@ -11,6 +11,7 @@ import config from "#r/config";
 import type {Cfg} from "#r/cfg/Cfg";
 import {compactCfg} from "#r/cfg/Cfg";
 import type CfgNode from "#r/cfg/CfgNode";
+import CfgNodeKind from "#r/cfg/CfgNodeKind";
 import {generateCfgFromFunction} from "#r/cfg/CfgGenerator";
 import SymbolicExecutor from "#r/symbolic/SymbolicExecutor";
 import SymbolicExpression from "#r/symbolic/expressions/SymbolicExpression";
@@ -20,26 +21,25 @@ import type {Breakpoint} from "./Breakpoints";
 import {getBreakpointsFromCfg} from "./Breakpoints";
 import DebuggerWebsocket from "./DebuggerWebsocket";
 
+type FunctionData = {cfg: Cfg, breakpoints: Breakpoint[]};
 type BranchingRecord = {cfgNode: CfgNode, isSecondary: boolean};
 
 export default class Executor {
 	#projectPath: string;
-	#functionDeclaration: Ts.FunctionDeclaration;
 	#projectConfiguration: Ts.ts.ParsedCommandLine;
-	#cfg: Cfg;
-	#breakpoints: Breakpoint[];
+	#sourceFile: Ts.SourceFile;
+	#functionDataMap: {[name: string]: FunctionData | undefined} = {};
+	#functionNameToTest: string;
 	#coveredCfgNodeIds: Set<number> = new Set<number>();
 	#currentBranchingSeries: BranchingRecord[] = [];
 
-	constructor(projectPath: string, functionDeclaration: Ts.FunctionDeclaration) {
+	constructor(projectPath: string, sourceFile: Ts.SourceFile, functionNameToTest: string) {
 		this.#projectPath = projectPath;
-		this.#functionDeclaration = functionDeclaration;
 		this.#projectConfiguration = Ts.ts.getParsedCommandLineOfConfigFile(
 			this.#projectPath + "\\tsconfig.json", undefined, Ts.ts.sys as any
 		)!;
-		this.#cfg = generateCfgFromFunction(this.#functionDeclaration);
-		compactCfg(this.#cfg);
-		this.#breakpoints = getBreakpointsFromCfg(this.#cfg);
+		this.#sourceFile = sourceFile;
+		this.#functionNameToTest = functionNameToTest;
 	}
 
 	async execute(): Promise<void> {
@@ -53,14 +53,14 @@ export default class Executor {
 	}
 
 	async #executeFunctionAndGetNextInput(): Promise<any | null> {
-		const sourceFilePath = this.#functionDeclaration.getSourceFile().getFilePath();
+		const sourceFilePath = this.#sourceFile.getFilePath();
 		const compiledFilePath = this.#getCompiledFilePath(sourceFilePath);
 
 		console.log("Starting debugger...");
 		const process = ChildProcess.spawn("node", [
 			"--inspect-brk=9339", "--enable-source-maps",
 			this.#getCompiledFilePath(
-				this.#functionDeclaration.getProject().getSourceFileOrThrow("driver.ts").getFilePath()
+				this.#sourceFile.getProject().getSourceFileOrThrow("driver.ts").getFilePath()
 			)
 		], {cwd: this.#projectPath, stdio: "pipe"});
 		process.stdout!.on("data", data => {});
@@ -123,36 +123,71 @@ export default class Executor {
 			FileSystem.readFileSync(Path.join(Path.dirname(compiledFilePath), sourceMapPath), "utf8")
 		);
 		const breakpointMap: {[id: string]: Breakpoint} = {};
-		for (const breakpoint of this.#breakpoints) {
-			const compiledLocation = sourceMapConsumer.generatedPositionFor({
-				source: Path.basename(sourceFilePath), line: breakpoint.line, column: breakpoint.column - 1
-			});
-			websocket.sendCommand("Debugger.setBreakpoint", {
-				location: {scriptId, lineNumber: compiledLocation.line! - 1, columnNumber: compiledLocation.column}
-			});
-			breakpointMap[(await websocket.getCommandResponse()).breakpointId as string] = breakpoint;
-		}
-		console.log("Set breakpoints, now running.");
+		const functionsWithSetBreakpoints = new Set<string>();
+		await this.#setBreakpoints(
+			this.#functionNameToTest, functionsWithSetBreakpoints,
+			scriptId, sourceMapConsumer, sourceFilePath, websocket, breakpointMap
+		);
+		console.log("Set initial breakpoints, now running.");
 
+		const functionToTest = this.#sourceFile.getFunctionOrThrow(this.#functionNameToTest);
 		const symbolicExecutor = new SymbolicExecutor();
-		symbolicExecutor.addParametersFromFunctionDeclaration(this.#functionDeclaration);
-		let currentCfgNode = this.#cfg.beginNode.primaryNext!;
-		let currentCodeNode = this.#functionDeclaration.getBody()!;
+		symbolicExecutor.addParametersFromFunctionDeclaration(functionToTest);
+		let cfg = this.#getFunctionData(this.#functionNameToTest).cfg;
+		let currentCfgNode: CfgNode = cfg.beginNode.primaryNext!;
+		let currentCodeNode = functionToTest.getBody()!;
+		let pendingCallCfgNodes: CfgNode[] = [];
+		const parentCalls: {
+			cfg: Cfg, currentCfgNode: CfgNode, currentCodeNode: Ts.Node, pendingCallCfgNodes: CfgNode[]
+		}[] = [];
 		const newBranchingSeries: BranchingRecord[] = [];
 		const branchingConditions: SymbolicExpression[] = [];
-		while (true) {
-			while (currentCfgNode !== this.#cfg.endNode && !currentCfgNode.isBranching) {
+
+		mainExecutionLoop: while (true) {
+			if (currentCfgNode === cfg.endNode && parentCalls.length === 0) break;
+			while (currentCfgNode !== cfg.endNode && !currentCfgNode.isBranching) {
+				if (currentCfgNode.kind === CfgNodeKind.CALL) pendingCallCfgNodes.push(currentCfgNode);
 				const next = currentCfgNode.primaryNext;
-				if (next === null) throw new Error("CFG ended prematurely.");
+				if (next === null) throw new Error("Malformed CFG: a non-ending node connects to nowhere.");
 				currentCfgNode = next;
 			}
-			if (currentCfgNode === this.#cfg.endNode) break;
-			executeCodeNode(currentCodeNode, symbolicExecutor);
-			while (currentCodeNode !== currentCfgNode.tsNode!) {
+			while (true) {
+				if (pendingCallCfgNodes.length !== 0) {
+					const callCfgNode = pendingCallCfgNodes[0];
+					const callPosition = callCfgNode.tsNode!.getStart();
+					const expressionNode = getExpressionNode(currentCodeNode);
+					if (
+						expressionNode !== null
+						&& callPosition >= expressionNode.getStart() && callPosition < expressionNode.getEnd()
+					) {
+						const functionName = (callCfgNode.tsNode! as Ts.CallExpression).getExpression().getText();
+						const calledFunction = this.#sourceFile.getFunctionOrThrow(functionName);
+						symbolicExecutor.prepareFunctionCall(
+							calledFunction, callCfgNode.tsNode! as Ts.CallExpression
+						);
+						pendingCallCfgNodes.shift();
+						parentCalls.push({cfg, currentCfgNode, currentCodeNode, pendingCallCfgNodes});
+						await this.#setBreakpoints(
+							functionName, functionsWithSetBreakpoints,
+							scriptId, sourceMapConsumer, sourceFilePath, websocket, breakpointMap
+						);
+						cfg = this.#getFunctionData(functionName).cfg;
+						currentCfgNode = cfg.beginNode.primaryNext!;
+						currentCodeNode = calledFunction.getBody()!;
+						pendingCallCfgNodes = [];
+						continue mainExecutionLoop;
+					}
+				}
+				symbolicExecutor.executeNode(currentCodeNode);
+				if (currentCodeNode === currentCfgNode.tsNode!) break;
 				const next = getNextNodeToExecute(currentCodeNode);
-				if (next === null) throw new Error("Code ended prematurely.");
+				if (next === null) {
+					if (parentCalls.length === 0) throw new Error("Code ended prematurely.");
+					if (currentCfgNode !== cfg.endNode) throw new Error("Actual function call ended while CFG hasn't.");
+					({cfg, currentCfgNode, currentCodeNode, pendingCallCfgNodes} = parentCalls.pop()!);
+					continue mainExecutionLoop;
+				}
 				currentCodeNode = next;
-				executeCodeNode(currentCodeNode, symbolicExecutor);
 			}
 			while (true) {
 				websocket.sendCommand("Debugger.resume");
@@ -200,7 +235,7 @@ export default class Executor {
 			const lastBranchIndex = newBranchingSeries.length - 1;
 			newBranchingSeries[lastBranchIndex].isSecondary = !newBranchingSeries[lastBranchIndex].isSecondary;
 			let smtString = "(set-option :pp.decimal true)\n";
-			for (const parameter of this.#functionDeclaration.getParameters())
+			for (const parameter of functionToTest.getParameters())
 				smtString += `(declare-const ${parameter.getName()} Real)\n`;
 			for (let i = 0; i !== newBranchingSeries.length; ++i) {
 				const condition = newBranchingSeries[i].isSecondary
@@ -229,9 +264,7 @@ export default class Executor {
 			this.#currentBranchingSeries = newBranchingSeries;
 			return Object.fromEntries([...smtString.matchAll(
 				/\(define-fun (\w+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
-			)].map(
-				entry => [entry[1], Number(entry[2].replaceAll(" ", ""))]
-			));
+			)].map(entry => [entry[1], Number(entry[2].replaceAll(" ", ""))]));
 		}
 	}
 
@@ -243,7 +276,7 @@ export default class Executor {
 	}
 
 	#generateInitialInput(): any {
-		return Object.fromEntries(this.#functionDeclaration.getParameters().map(
+		return Object.fromEntries(this.#sourceFile.getFunctionOrThrow(this.#functionNameToTest).getParameters().map(
 			parameter => [parameter.getName(), Math.floor(Math.random() * 201) - 100]
 		));
 	}
@@ -252,6 +285,35 @@ export default class Executor {
 		return Ts.ts.getOutputFileNames(
 			this.#projectConfiguration, sourceFilePath.replaceAll('\\', '/'), false
 		)[0];
+	}
+
+	#getFunctionData(functionName: string): FunctionData {
+		let functionData = this.#functionDataMap[functionName];
+		if (functionData === undefined) {
+			const cfg = generateCfgFromFunction(this.#sourceFile.getFunctionOrThrow(functionName));
+			compactCfg(cfg);
+			functionData = {cfg, breakpoints: getBreakpointsFromCfg(cfg)};
+			this.#functionDataMap[functionName] = functionData;
+		}
+		return functionData;
+	}
+
+	async #setBreakpoints(
+		functionName: string, setFunctions: Set<string>,
+		scriptId: string, sourceMapConsumer: SourceMapConsumer, sourceFilePath: string,
+		websocket: DebuggerWebsocket, breakpointMap: {[id: string]: Breakpoint}
+	): Promise<void> {
+		if (setFunctions.has(functionName)) return;
+		setFunctions.add(functionName);
+		for (const breakpoint of this.#getFunctionData(functionName).breakpoints) {
+			const compiledLocation = sourceMapConsumer.generatedPositionFor({
+				source: Path.basename(sourceFilePath), line: breakpoint.line, column: breakpoint.column - 1
+			});
+			websocket.sendCommand("Debugger.setBreakpoint", {
+				location: {scriptId, lineNumber: compiledLocation.line! - 1, columnNumber: compiledLocation.column}
+			});
+			breakpointMap[(await websocket.getCommandResponse()).breakpointId as string] = breakpoint;
+		}
 	}
 }
 
@@ -270,12 +332,6 @@ const loopSyntaxKinds = new Set<Ts.SyntaxKind>([
 	Ts.SyntaxKind.ForOfStatement,
 	Ts.SyntaxKind.WhileStatement
 ]);
-
-function executeCodeNode(tsNode: Ts.Node, symbolicExecutor: SymbolicExecutor): void {
-	if (Ts.Node.isBlock(tsNode)) symbolicExecutor.startScope();
-	else if (tsNode.getKind() === Ts.SyntaxKind.CloseBraceToken) symbolicExecutor.endScope();
-	else if (Ts.Node.isStatement(tsNode)) symbolicExecutor.executeStatement(tsNode);
-}
 
 function getCodeNodeFromBranch(tsNode: Ts.Node, isSecondary: boolean): Ts.Node {
 	switch (tsNode.getKind()) {
@@ -306,12 +362,13 @@ function getNextNodeToExecute(tsNode: Ts.Node): Ts.Node | null {
 			break;
 		case Ts.SyntaxKind.ContinueStatement:
 			throw new Error("`continue` statement not supported yet.");
+		case Ts.SyntaxKind.VariableStatement:
+			return (tsNode as Ts.VariableStatement).getDeclarations()[0];
 	}
 	let candidate = nodeToStep.getNextSibling();
 	while (candidate === undefined) {
 		const parent = nodeToStep.getParent();
-		if (parent === undefined || parent.getKind() === Ts.SyntaxKind.FunctionDeclaration)
-			throw new Error("Failed to find next node to execute.");
+		if (parent === undefined) throw new Error("Failed to find next node to execute.");
 		switch (parent.getKind()) {
 			case Ts.SyntaxKind.Block:
 				return parent.getChildren()[2];
@@ -320,6 +377,8 @@ function getNextNodeToExecute(tsNode: Ts.Node): Ts.Node | null {
 			case Ts.SyntaxKind.ForOfStatement:
 			case Ts.SyntaxKind.WhileStatement:
 				return parent;
+			case Ts.SyntaxKind.FunctionDeclaration:
+				return null;
 			default:
 				nodeToStep = parent;
 				if (nodeToStep.getKind() !== Ts.SyntaxKind.SyntaxList) candidate = nodeToStep.getNextSibling();
@@ -336,5 +395,18 @@ function getBranchingCondition(cfgNode: CfgNode, symbolicExecutor: SymbolicExecu
 			return symbolicExecutor.evaluateExpression((tsNode as Ts.IfStatement).getExpression());
 		default:
 			throw new Error(`Syntax kind ${tsNode.getKindName()} not supported yet.`);
+	}
+}
+
+function getExpressionNode(tsNode: Ts.Node): Ts.Expression | null {
+	switch (tsNode.getKind()) {
+		case Ts.SyntaxKind.VariableDeclaration:
+			return (tsNode as Ts.VariableDeclaration).getInitializer() ?? null;
+		case Ts.SyntaxKind.ExpressionStatement:
+			return (tsNode as Ts.ExpressionStatement).getExpression();
+		case Ts.SyntaxKind.ReturnStatement:
+			return (tsNode as Ts.ReturnStatement).getExpression() ?? null;
+		default:
+			return null;
 	}
 }

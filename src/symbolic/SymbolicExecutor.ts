@@ -9,6 +9,11 @@ import TernarySymbolicExpression from "./expressions/TernarySymbolicExpression";
 import UnarySymbolicExpression from "./expressions/UnarySymbolicExpression";
 import VariableSymbolicExpression from "./expressions/VariableSymbolicExpression";
 
+type SymbolicVariable = {
+	scopeLevel: number,
+	previousScopeLevel: number | null,
+	value: SymbolicExpression
+};
 type FunctionCall = {
 	scopeLevel: number,
 	returnValueKey: string
@@ -34,12 +39,17 @@ const assignmentOperatorMap: {[assignmentOperator: string]: string | undefined} 
 };
 
 export default class SymbolicExecutor {
-	variableTable: Map<string, SymbolicExpression> = new Map<string, SymbolicExpression>();
+	variableTable: Map<string, SymbolicVariable> = new Map<string, SymbolicVariable>();
 	scopeStack: string[][] = [];
+	shadowedVariableStack: Map<string, SymbolicVariable>[] = [];
 	functionCalls: FunctionCall[] = [];
 
+	constructor() {
+		this.startScope();
+	}
+
 	addParametersFromFunctionDeclaration(functionDeclaration: Ts.FunctionDeclaration): void {
-		for (const parameterDeclaration of functionDeclaration.getParameters()) this.variableTable.set(
+		for (const parameterDeclaration of functionDeclaration.getParameters()) this.addVariable(
 			makeVariableKey(parameterDeclaration.getName(), parameterDeclaration),
 			new VariableSymbolicExpression(parameterDeclaration.getName(), true)
 		);
@@ -47,15 +57,34 @@ export default class SymbolicExecutor {
 
 	startScope(): void {
 		this.scopeStack.push([]);
+		this.shadowedVariableStack.push(new Map<string, SymbolicVariable>());
 	}
 
 	endScope(): void {
-		for (const key of this.scopeStack.pop()!) this.variableTable.delete(key);
+		for (const key of this.scopeStack.pop()!) {
+			const previousScopeLevel = this.variableTable.get(key)!.previousScopeLevel;
+			if (previousScopeLevel === null) {
+				this.variableTable.delete(key);
+			} else {
+				const shadowedFrame = this.shadowedVariableStack[previousScopeLevel];
+				this.variableTable.set(key, shadowedFrame.get(key)!);
+				shadowedFrame.delete(key);
+			}
+		}
+		this.shadowedVariableStack.pop();
 	}
 
 	addVariable(key: string, value: SymbolicExpression): void {
-		this.variableTable.set(key, value);
-		this.scopeStack[this.scopeStack.length - 1].push(key);
+		const scopeLevel = this.scopeStack.length - 1;
+		const shadowedVariable = this.variableTable.get(key);
+		if (shadowedVariable !== undefined)
+			this.shadowedVariableStack[shadowedVariable.scopeLevel].set(key, shadowedVariable);
+		this.variableTable.set(key, {
+			scopeLevel,
+			previousScopeLevel: shadowedVariable === undefined ? null : shadowedVariable.scopeLevel,
+			value
+		});
+		this.scopeStack[scopeLevel].push(key);
 	}
 
 	prepareFunctionCall(calledFunction: Ts.FunctionDeclaration, callExpression: Ts.CallExpression): void {
@@ -89,7 +118,7 @@ export default class SymbolicExecutor {
 					makeVariableKey(variableDeclaration.getName(), variableDeclaration),
 					initializer === undefined
 						? new ConstantSymbolicExpression(undefined)
-						: this.evaluateExpression(initializer)
+						: this.evaluateExpression(initializer, true)
 				);
 				break;
 			}
@@ -121,15 +150,17 @@ export default class SymbolicExecutor {
 				const variable = (
 					(expression as Ts.Identifier).getDefinitionNodes()[0]
 				) as Ts.ParameterDeclaration | Ts.VariableDeclaration;
-				return this.variableTable.get(makeVariableKey(variable.getName(), variable))!.clone();
+				return this.variableTable.get(makeVariableKey(variable.getName(), variable))!.value.clone();
 			}
 			case Ts.SyntaxKind.ParenthesizedExpression:
-				return this.evaluateExpression((expression as Ts.ParenthesizedExpression).getExpression());
+				return this.evaluateExpression(
+					(expression as Ts.ParenthesizedExpression).getExpression(), executeAssignments
+				);
 			case Ts.SyntaxKind.PrefixUnaryExpression: {
 				const unaryExpression = expression as Ts.PrefixUnaryExpression;
 				return new UnarySymbolicExpression(
 					Ts.ts.tokenToString(unaryExpression.getOperatorToken())!,
-					this.evaluateExpression(unaryExpression.getOperand())
+					this.evaluateExpression(unaryExpression.getOperand(), executeAssignments)
 				);
 			}
 			case Ts.SyntaxKind.BinaryExpression: {
@@ -137,10 +168,10 @@ export default class SymbolicExecutor {
 				const assignmentOperator = assignmentOperatorMap[binaryExpression.getOperatorToken().getText()];
 				if (assignmentOperator === undefined) return new BinarySymbolicExpression(
 					binaryExpression.getOperatorToken().getText(),
-					this.evaluateExpression(binaryExpression.getLeft()),
-					this.evaluateExpression(binaryExpression.getRight())
+					this.evaluateExpression(binaryExpression.getLeft(), executeAssignments),
+					this.evaluateExpression(binaryExpression.getRight(), executeAssignments)
 				);
-				let newValueExpression = this.evaluateExpression(binaryExpression.getRight());
+				let newValueExpression = this.evaluateExpression(binaryExpression.getRight(), executeAssignments);
 				const leftOperand = binaryExpression.getLeft();
 				if (!Ts.Node.isIdentifier(leftOperand))
 					throw new Error("Only simple assignment expressions are supported at the moment.");
@@ -148,27 +179,23 @@ export default class SymbolicExecutor {
 					= leftOperand.getDefinitionNodes()[0] as Ts.ParameterDeclaration | Ts.VariableDeclaration;
 				const variableKey = makeVariableKey(variable.getName(), variable);
 				if (assignmentOperator !== "=") newValueExpression = new BinarySymbolicExpression(
-					assignmentOperator, this.variableTable.get(variableKey)!.clone(), newValueExpression
+					assignmentOperator, this.variableTable.get(variableKey)!.value.clone(), newValueExpression
 				);
-				if (executeAssignments) this.variableTable.set(variableKey, newValueExpression);
+				if (executeAssignments) this.variableTable.get(variableKey)!.value = newValueExpression;
 				return newValueExpression;
 			}
 			case Ts.SyntaxKind.ConditionalExpression: {
 				const conditionalExpression = expression as Ts.ConditionalExpression;
 				return new TernarySymbolicExpression(
-					this.evaluateExpression(conditionalExpression.getCondition()),
-					this.evaluateExpression(conditionalExpression.getWhenTrue()),
-					this.evaluateExpression(conditionalExpression.getWhenFalse())
+					this.evaluateExpression(conditionalExpression.getCondition(), executeAssignments),
+					this.evaluateExpression(conditionalExpression.getWhenTrue(), executeAssignments),
+					this.evaluateExpression(conditionalExpression.getWhenFalse(), executeAssignments)
 				);
 			}
 			case Ts.SyntaxKind.CallExpression: {
 				const callExpression = expression as Ts.CallExpression;
-				const returnValueKey = makeVariableKey("[call]", callExpression);
-				if (this.variableTable.has(returnValueKey)) {
-					const value = this.variableTable.get(returnValueKey)!;
-					this.variableTable.delete(returnValueKey);
-					return value;
-				}
+				const returnVariable = this.variableTable.get(makeVariableKey("[call]", callExpression));
+				if (returnVariable !== undefined) return returnVariable.value;
 				const functionExpression = callExpression.getExpression();
 				if (!Ts.Node.isPropertyAccessExpression(functionExpression))
 					throw new Error("Call expression's function expression is too complex.");
@@ -183,9 +210,9 @@ export default class SymbolicExecutor {
 				if (builtinFunction === undefined) throw new Error(
 					`Built-in class ${className} does not have function ${functionExpression.getName()}.`
 				);
-				return builtinFunction(
-					callExpression.getArguments().map(argument => this.evaluateExpression(argument as Ts.Expression))
-				);
+				return builtinFunction(callExpression.getArguments().map(
+					argument => this.evaluateExpression(argument as Ts.Expression, executeAssignments)
+				));
 			}
 			default:
 				throw new Error(`Expression kind ${expression.getKindName()} is not yet supported.`);

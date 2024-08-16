@@ -194,13 +194,15 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 			return generateCfgFromNode((tsNode as Ts.ExpressionStatement).getExpression());
 
 		// Expressions.
+		case Ts.SyntaxKind.ParenthesizedExpression:
+			return generateCfgFromNode((tsNode as Ts.ParenthesizedExpression).getExpression());
 		case Ts.SyntaxKind.PrefixUnaryExpression:
 		case Ts.SyntaxKind.PostfixUnaryExpression:
 			return generateCfgFromNode((tsNode as Ts.PrefixUnaryExpression | Ts.PostfixUnaryExpression).getOperand());
 		case Ts.SyntaxKind.BinaryExpression: {
 			const binaryExpression = tsNode as Ts.BinaryExpression;
 			const leftSubCfg = generateCfgFromNode(binaryExpression.getLeft());
-			const rightSubCfg = generateCfgFromNode(binaryExpression.getLeft());
+			const rightSubCfg = generateCfgFromNode(binaryExpression.getRight());
 			cfg.beginNode.primaryNext = leftSubCfg.beginNode;
 			leftSubCfg.endNode.primaryNext = rightSubCfg.beginNode;
 			rightSubCfg.endNode.primaryNext = cfg.endNode;

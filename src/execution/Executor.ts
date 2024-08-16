@@ -19,6 +19,7 @@ import UnarySymbolicExpression from "#r/symbolic/expressions/UnarySymbolicExpres
 
 import type {Breakpoint} from "./Breakpoints";
 import {getBreakpointsFromCfg} from "./Breakpoints";
+import {transformStatement} from "./CodeTransformer";
 import DebuggerWebsocket from "./DebuggerWebsocket";
 
 type FunctionData = {cfg: Cfg, breakpoints: Breakpoint[]};
@@ -43,6 +44,9 @@ export default class Executor {
 	}
 
 	async execute(): Promise<void> {
+		for (const functionDeclaration of this.#sourceFile.getFunctions())
+			transformStatement(functionDeclaration.getBody()! as Ts.Statement, false);
+		this.#sourceFile.getProject().save();
 		let input: any | null = this.#generateInitialInput();
 		while (input !== null) {
 			console.log("Inputs: " + Object.entries(input).map(entry => `${entry[0]} = ${entry[1]}`).join("; "));
@@ -124,8 +128,8 @@ export default class Executor {
 		);
 		const breakpointMap: {[id: string]: Breakpoint} = {};
 		const functionsWithSetBreakpoints = new Set<string>();
-		await this.#setBreakpoints(
-			this.#functionNameToTest, functionsWithSetBreakpoints,
+		for (const functionDeclaration of this.#sourceFile.getFunctions()) await this.#setBreakpoints(
+			functionDeclaration.getName()!, functionsWithSetBreakpoints,
 			scriptId, sourceMapConsumer, sourceFilePath, websocket, breakpointMap
 		);
 		console.log("Set initial breakpoints, now running.");
@@ -366,6 +370,10 @@ function getNextNodeToExecute(tsNode: Ts.Node): Ts.Node | null {
 			return (tsNode as Ts.VariableStatement).getDeclarations()[0];
 	}
 	let candidate = nodeToStep.getNextSibling();
+	if (candidate !== undefined && candidate.getKind() === Ts.SyntaxKind.ElseKeyword) {
+		nodeToStep = candidate.getParent()!;
+		candidate = nodeToStep.getNextSibling();
+	}
 	while (candidate === undefined) {
 		const parent = nodeToStep.getParent();
 		if (parent === undefined) throw new Error("Failed to find next node to execute.");

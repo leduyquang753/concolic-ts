@@ -23,7 +23,7 @@ import {transformStatement} from "./CodeTransformer";
 import DebuggerWebsocket from "./DebuggerWebsocket";
 
 type FunctionData = {cfg: Cfg, breakpoints: Breakpoint[]};
-type BranchingRecord = {cfgNode: CfgNode, isSecondary: boolean};
+type BranchingRecord = {parentCalls: string, cfgNode: CfgNode, isSecondary: boolean};
 
 export default class Executor {
 	#projectPath: string;
@@ -31,7 +31,7 @@ export default class Executor {
 	#sourceFile: Ts.SourceFile;
 	#functionDataMap: {[name: string]: FunctionData | undefined} = {};
 	#functionNameToTest: string;
-	#coveredCfgNodeIds: Set<number> = new Set<number>();
+	#coveredCfgNodes: Set<string> = new Set<string>();
 	#currentBranchingSeries: BranchingRecord[] = [];
 
 	constructor(projectPath: string, sourceFile: Ts.SourceFile, functionNameToTest: string) {
@@ -46,7 +46,7 @@ export default class Executor {
 	async execute(): Promise<void> {
 		for (const functionDeclaration of this.#sourceFile.getFunctions())
 			transformStatement(functionDeclaration.getBody()! as Ts.Statement, false);
-		this.#sourceFile.getProject().save();
+		await this.#sourceFile.getProject().save();
 		let input: any | null = this.#generateInitialInput();
 		while (input !== null) {
 			console.log("Inputs: " + Object.entries(input).map(entry => `${entry[0]} = ${entry[1]}`).join("; "));
@@ -144,6 +144,8 @@ export default class Executor {
 		const parentCalls: {
 			cfg: Cfg, currentCfgNode: CfgNode, currentCodeNode: Ts.Node, pendingCallCfgNodes: CfgNode[]
 		}[] = [];
+		const parentCallPathStack: string[] = [];
+		let parentCallPathString: string = "";
 		const newBranchingSeries: BranchingRecord[] = [];
 		const branchingConditions: SymbolicExpression[] = [];
 
@@ -164,13 +166,17 @@ export default class Executor {
 						expressionNode !== null
 						&& callPosition >= expressionNode.getStart() && callPosition < expressionNode.getEnd()
 					) {
-						const functionName = (callCfgNode.tsNode! as Ts.CallExpression).getExpression().getText();
+						const callExpression = callCfgNode.tsNode! as Ts.CallExpression;
+						const functionName = callExpression.getExpression().getText();
 						const calledFunction = this.#sourceFile.getFunctionOrThrow(functionName);
 						symbolicExecutor.prepareFunctionCall(
 							calledFunction, callCfgNode.tsNode! as Ts.CallExpression
 						);
 						pendingCallCfgNodes.shift();
 						parentCalls.push({cfg, currentCfgNode, currentCodeNode, pendingCallCfgNodes});
+						parentCallPathStack.push(callExpression.getStart().toString());
+						parentCallPathString
+							= parentCallPathStack.join(' ') + (parentCallPathStack.length === 0 ? "" : " ");
 						await this.#setBreakpoints(
 							functionName, functionsWithSetBreakpoints,
 							scriptId, sourceMapConsumer, sourceFilePath, websocket, breakpointMap
@@ -189,6 +195,9 @@ export default class Executor {
 					if (parentCalls.length === 0) throw new Error("Code ended prematurely.");
 					if (currentCfgNode !== cfg.endNode) throw new Error("Actual function call ended while CFG hasn't.");
 					({cfg, currentCfgNode, currentCodeNode, pendingCallCfgNodes} = parentCalls.pop()!);
+					parentCallPathStack.pop();
+					parentCallPathString
+						= parentCallPathStack.join(' ') + (parentCallPathStack.length === 0 ? "" : " ");
 					continue mainExecutionLoop;
 				}
 				currentCodeNode = next;
@@ -202,11 +211,13 @@ export default class Executor {
 						if (newBranchingSeries.length < this.#currentBranchingSeries.length) {
 							const currentRecord = this.#currentBranchingSeries[newBranchingSeries.length];
 							if (
-								currentRecord.cfgNode !== currentCfgNode
+								currentRecord.parentCalls !== parentCallPathString
+								|| currentRecord.cfgNode !== currentCfgNode
 								|| currentRecord.isSecondary !== hitBreakpoint.isSecondaryBranch
 							) throw new Error("Actual code execution doesn't match what's predicted.");
 						}
 						newBranchingSeries.push({
+							parentCalls: parentCallPathString,
 							cfgNode: currentCfgNode, isSecondary: hitBreakpoint.isSecondaryBranch
 						});
 						branchingConditions.push(getBranchingCondition(currentCfgNode, symbolicExecutor));
@@ -223,14 +234,14 @@ export default class Executor {
 		websocket.close();
 		console.log("Finished execution.");
 		console.log("Branching series: " + newBranchingSeries.map(e => e.isSecondary ? '0' : '1').join(" "));
-		if (this.#currentBranchingSeries.length !== 0) this.#coveredCfgNodeIds.add(
-			this.#currentBranchingSeries[this.#currentBranchingSeries.length - 1].cfgNode.id
-		);
+		if (this.#currentBranchingSeries.length !== 0) {
+			const lastRecord = this.#currentBranchingSeries[this.#currentBranchingSeries.length - 1];
+			this.#coveredCfgNodes.add(lastRecord.parentCalls + lastRecord.cfgNode.id);
+		}
 		while (true) {
-			while (
-				newBranchingSeries.length !== 0
-				&& this.#coveredCfgNodeIds.has(newBranchingSeries[newBranchingSeries.length - 1].cfgNode.id)
-			) {
+			while (newBranchingSeries.length !== 0) {
+				const lastRecord = newBranchingSeries[newBranchingSeries.length - 1];
+				if (!this.#coveredCfgNodes.has(lastRecord.parentCalls + lastRecord.cfgNode.id)) break;
 				newBranchingSeries.pop();
 				branchingConditions.pop();
 			}

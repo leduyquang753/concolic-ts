@@ -126,11 +126,12 @@ export default class Executor {
 		const sourceMapConsumer = await new SourceMapConsumer(
 			FileSystem.readFileSync(Path.join(Path.dirname(compiledFilePath), sourceMapPath), "utf8")
 		);
+		const sourceMapSourcePath = Path.relative(Path.dirname(compiledFilePath), sourceFilePath).replaceAll('\\', '/');
 		const breakpointMap: {[id: string]: Breakpoint} = {};
 		const functionsWithSetBreakpoints = new Set<string>();
 		for (const functionDeclaration of this.#sourceFile.getFunctions()) await this.#setBreakpoints(
 			functionDeclaration.getName()!, functionsWithSetBreakpoints,
-			scriptId, sourceMapConsumer, sourceFilePath, websocket, breakpointMap
+			scriptId, sourceMapConsumer, sourceMapSourcePath, websocket, breakpointMap
 		);
 		console.log("Set initial breakpoints, now running.");
 
@@ -179,7 +180,7 @@ export default class Executor {
 							= parentCallPathStack.join(' ') + (parentCallPathStack.length === 0 ? "" : " ");
 						await this.#setBreakpoints(
 							functionName, functionsWithSetBreakpoints,
-							scriptId, sourceMapConsumer, sourceFilePath, websocket, breakpointMap
+							scriptId, sourceMapConsumer, sourceMapSourcePath, websocket, breakpointMap
 						);
 						cfg = this.#getFunctionData(functionName).cfg;
 						currentCfgNode = cfg.beginNode.primaryNext!;
@@ -315,14 +316,14 @@ export default class Executor {
 
 	async #setBreakpoints(
 		functionName: string, setFunctions: Set<string>,
-		scriptId: string, sourceMapConsumer: SourceMapConsumer, sourceFilePath: string,
+		scriptId: string, sourceMapConsumer: SourceMapConsumer, sourceMapSourcePath: string,
 		websocket: DebuggerWebsocket, breakpointMap: {[id: string]: Breakpoint}
 	): Promise<void> {
 		if (setFunctions.has(functionName)) return;
 		setFunctions.add(functionName);
 		for (const breakpoint of this.#getFunctionData(functionName).breakpoints) {
 			const compiledLocation = sourceMapConsumer.generatedPositionFor({
-				source: Path.basename(sourceFilePath), line: breakpoint.line, column: breakpoint.column - 1
+				source: sourceMapSourcePath, line: breakpoint.line, column: breakpoint.column - 1
 			});
 			websocket.sendCommand("Debugger.setBreakpoint", {
 				location: {scriptId, lineNumber: compiledLocation.line! - 1, columnNumber: compiledLocation.column}

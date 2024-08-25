@@ -242,7 +242,7 @@ export default class Executor {
 							parentCalls: parentCallPathString,
 							cfgNode: currentCfgNode, isSecondary: hitBreakpoint.isSecondaryBranch
 						});
-						branchingConditions.push(getBranchingCondition(currentCfgNode, symbolicExecutor));
+						branchingConditions.push(getBranchingCondition(currentCfgNode, symbolicExecutor).trySimplify(true));
 						currentCfgNode = hitBreakpoint.isSecondaryBranch
 							? currentCfgNode.secondaryNext! : currentCfgNode.primaryNext!;
 						currentCodeNode = getCodeNodeFromBranch(currentCodeNode, hitBreakpoint.isSecondaryBranch);
@@ -274,7 +274,7 @@ export default class Executor {
 			const conditions = [];
 			for (let i = 0; i !== newBranchingSeries.length; ++i) conditions.push(
 				newBranchingSeries[i].isSecondary
-				? new UnarySymbolicExpression("!", branchingConditions[i])
+				? new UnarySymbolicExpression("!", branchingConditions[i]).trySimplify(true)
 				: branchingConditions[i]
 			);
 			const usedParameters = new Set<string>();

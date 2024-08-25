@@ -16,6 +16,10 @@ export default class VariableSymbolicExpression extends SymbolicExpression {
 		return this.symbolicName;
 	}
 
+	override getChildExpressions(): SymbolicExpression[] {
+		return [];
+	}
+
 	override clone(): SymbolicExpression {
 		return new VariableSymbolicExpression(this.symbolicName, this.isParameter);
 	}

@@ -12,6 +12,7 @@ abstract class SymbolicExpression {
 	}
 
 	abstract get smtString(): string;
+	abstract getChildExpressions(): SymbolicExpression[];
 	abstract clone(): SymbolicExpression;
 }
 

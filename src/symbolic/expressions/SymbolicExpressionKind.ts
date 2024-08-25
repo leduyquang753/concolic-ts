@@ -3,7 +3,8 @@ enum SymbolicExpressionKind {
 	VARIABLE,
 	UNARY,
 	BINARY,
-	TERNARY
+	TERNARY,
+	OBJECT
 }
 
 export default SymbolicExpressionKind;

@@ -17,6 +17,10 @@ export default class ConstantSymbolicExpression extends SymbolicExpression {
 		return this.value.toString();
 	}
 
+	override getChildExpressions(): SymbolicExpression[] {
+		return [];
+	}
+
 	override clone(): SymbolicExpression {
 		return new ConstantSymbolicExpression(structuredClone(this.value));
 	}

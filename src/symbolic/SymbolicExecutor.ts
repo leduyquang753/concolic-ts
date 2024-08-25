@@ -3,6 +3,7 @@ import * as Ts from "ts-morph";
 import symbolicBuiltinClasses from "./builtins/SymbolicBuiltins";
 import BinarySymbolicExpression from "./expressions/BinarySymbolicExpression";
 import ConstantSymbolicExpression from "./expressions/ConstantSymbolicExpression";
+import ObjectSymbolicExpression from "./expressions/ObjectSymbolicExpression";
 import SymbolicExpression from "./expressions/SymbolicExpression";
 import SymbolicExpressionKind from "./expressions/SymbolicExpressionKind";
 import TernarySymbolicExpression from "./expressions/TernarySymbolicExpression";
@@ -51,8 +52,28 @@ export default class SymbolicExecutor {
 	addParametersFromFunctionDeclaration(functionDeclaration: Ts.FunctionDeclaration): void {
 		for (const parameterDeclaration of functionDeclaration.getParameters()) this.addVariable(
 			makeVariableKey(parameterDeclaration.getName(), parameterDeclaration),
-			new VariableSymbolicExpression(parameterDeclaration.getName(), true)
+			parameterDeclaration.getType().isObject()
+				? this.#generateObjectForParameter(
+					parameterDeclaration.getName() + '.', parameterDeclaration.getType()
+				)
+				: new VariableSymbolicExpression(parameterDeclaration.getName(), true)
 		);
+	}
+
+	#generateObjectForParameter(prefix: string, tsType: Ts.Type): ObjectSymbolicExpression {
+		const object = new ObjectSymbolicExpression({});
+		for (const property of tsType.getProperties()) {
+			const subType = property.getDeclarations()[0].getType();
+			if (subType.isObject()) {
+				object.value[property.getName()]
+					= this.#generateObjectForParameter(prefix + property.getName() + '.', subType);
+			} else if (subType.isNumber()) {
+				object.value[property.getName()] = new VariableSymbolicExpression(prefix + property.getName(), true);
+			} else {
+				throw new Error("Non-number types are not yet supported.");
+			}
+		}
+		return object;
 	}
 
 	startScope(): void {
@@ -152,6 +173,16 @@ export default class SymbolicExecutor {
 				) as Ts.ParameterDeclaration | Ts.VariableDeclaration;
 				return this.variableTable.get(makeVariableKey(variable.getName(), variable))!.value.clone();
 			}
+			case Ts.SyntaxKind.PropertyAccessExpression: {
+				const propertyAccessExpression = (expression as Ts.PropertyAccessExpression);
+				const objectSymbolicExpression = this.evaluateExpression(propertyAccessExpression.getExpression());
+				if (objectSymbolicExpression.kind !== SymbolicExpressionKind.OBJECT)
+					throw new Error("Trying to access property from non-object.");
+				const result = (objectSymbolicExpression as ObjectSymbolicExpression)
+					.value[propertyAccessExpression.getName()];
+				if (result === undefined) throw new Error("Trying to access nonexistent property from object.");
+				return result;
+			}
 			case Ts.SyntaxKind.ParenthesizedExpression:
 				return this.evaluateExpression(
 					(expression as Ts.ParenthesizedExpression).getExpression(), executeAssignments
@@ -164,6 +195,7 @@ export default class SymbolicExecutor {
 				);
 			}
 			case Ts.SyntaxKind.BinaryExpression: {
+				// TODO: Handle side effects properly and in order.
 				const binaryExpression = expression as Ts.BinaryExpression;
 				const assignmentOperator = assignmentOperatorMap[binaryExpression.getOperatorToken().getText()];
 				if (assignmentOperator === undefined) return new BinarySymbolicExpression(
@@ -172,16 +204,28 @@ export default class SymbolicExecutor {
 					this.evaluateExpression(binaryExpression.getRight(), executeAssignments)
 				);
 				let newValueExpression = this.evaluateExpression(binaryExpression.getRight(), executeAssignments);
-				const leftOperand = binaryExpression.getLeft();
-				if (!Ts.Node.isIdentifier(leftOperand))
-					throw new Error("Only simple assignment expressions are supported at the moment.");
-				const variable
-					= leftOperand.getDefinitionNodes()[0] as Ts.ParameterDeclaration | Ts.VariableDeclaration;
-				const variableKey = makeVariableKey(variable.getName(), variable);
 				if (assignmentOperator !== "=") newValueExpression = new BinarySymbolicExpression(
-					assignmentOperator, this.variableTable.get(variableKey)!.value.clone(), newValueExpression
+					assignmentOperator,
+					this.evaluateExpression(binaryExpression.getLeft(), executeAssignments),
+					newValueExpression
 				);
-				if (executeAssignments) this.variableTable.get(variableKey)!.value = newValueExpression;
+				if (!executeAssignments) return newValueExpression;
+				const leftOperand = binaryExpression.getLeft();
+				if (Ts.Node.isIdentifier(leftOperand)) {
+					const variable
+						= leftOperand.getDefinitionNodes()[0] as Ts.ParameterDeclaration | Ts.VariableDeclaration;
+					this.variableTable.get(makeVariableKey(variable.getName(), variable))!.value = newValueExpression;
+				} else if (Ts.Node.isPropertyAccessExpression(leftOperand)) {
+					const objectSymbolicExpression = this.evaluateExpression(leftOperand.getExpression());
+					if (objectSymbolicExpression.kind !== SymbolicExpressionKind.OBJECT)
+						throw new Error("Trying to access property from non-object.");
+					const object = (objectSymbolicExpression as ObjectSymbolicExpression).value;
+					if (!(leftOperand.getName() in object))
+						throw new Error("Trying to access nonexistent property from object.");
+					object[leftOperand.getName()] = newValueExpression;
+				} else {
+					throw new Error("Unsupported target of assignment operation.");
+				}
 				return newValueExpression;
 			}
 			case Ts.SyntaxKind.ConditionalExpression: {

@@ -15,7 +15,9 @@ import CfgNodeKind from "#r/cfg/CfgNodeKind";
 import {generateCfgFromFunction} from "#r/cfg/CfgGenerator";
 import SymbolicExecutor from "#r/symbolic/SymbolicExecutor";
 import SymbolicExpression from "#r/symbolic/expressions/SymbolicExpression";
+import SymbolicExpressionKind from "#r/symbolic/expressions/SymbolicExpressionKind";
 import UnarySymbolicExpression from "#r/symbolic/expressions/UnarySymbolicExpression";
+import VariableSymbolicExpression from "#r/symbolic/expressions/VariableSymbolicExpression";
 
 import type {Breakpoint} from "./Breakpoints";
 import {getBreakpointsFromCfg} from "./Breakpoints";
@@ -31,6 +33,7 @@ export default class Executor {
 	#sourceFile: Ts.SourceFile;
 	#functionDataMap: {[name: string]: FunctionData | undefined} = {};
 	#functionNameToTest: string;
+	#parameterNames: Set<string> = new Set<string>();
 	#coveredCfgNodes: Set<string> = new Set<string>();
 	#currentBranchingSeries: BranchingRecord[] = [];
 
@@ -47,6 +50,12 @@ export default class Executor {
 		for (const functionDeclaration of this.#sourceFile.getFunctions())
 			transformStatement(functionDeclaration.getBody()! as Ts.Statement, false);
 		await this.#sourceFile.getProject().save();
+		for (
+			const parameterDeclaration
+			of this.#sourceFile.getFunctionOrThrow(this.#functionNameToTest).getParameters()
+		) collectParametersFromType(
+			"", parameterDeclaration.getName(), parameterDeclaration.getType(), this.#parameterNames
+		);
 		let input: any | null = this.#generateInitialInput();
 		while (input !== null) {
 			console.log("Inputs: " + Object.entries(input).map(entry => `${entry[0]} = ${entry[1]}`).join("; "));
@@ -250,15 +259,17 @@ export default class Executor {
 			console.log("Generating constraints...");
 			const lastBranchIndex = newBranchingSeries.length - 1;
 			newBranchingSeries[lastBranchIndex].isSecondary = !newBranchingSeries[lastBranchIndex].isSecondary;
+			const conditions = [];
+			for (let i = 0; i !== newBranchingSeries.length; ++i) conditions.push(
+				newBranchingSeries[i].isSecondary
+				? new UnarySymbolicExpression("!", branchingConditions[i])
+				: branchingConditions[i]
+			);
+			const usedParameters = new Set<string>();
+			for (const condition of conditions) collectUsedParametersFromCondition(condition, usedParameters);
 			let smtString = "(set-option :pp.decimal true)\n";
-			for (const parameter of functionToTest.getParameters())
-				smtString += `(declare-const ${parameter.getName()} Real)\n`;
-			for (let i = 0; i !== newBranchingSeries.length; ++i) {
-				const condition = newBranchingSeries[i].isSecondary
-					? new UnarySymbolicExpression("!", branchingConditions[i])
-					: branchingConditions[i];
-				smtString += `(assert ${condition.smtString})\n`;
-			}
+			for (const parameter of usedParameters) smtString += `(declare-const ${parameter} Real)\n`;
+			for (const condition of conditions) smtString += `(assert ${condition.smtString})\n`;
 			smtString += "(check-sat-using qfnra-nlsat)\n(get-model)\n";
 			const smtFilePath = Path.join(this.#projectPath, "smt.txt");
 			FileSystem.writeFileSync(smtFilePath, smtString, "utf8");
@@ -278,9 +289,12 @@ export default class Executor {
 				throw new Error("Failed to solve constraints.");
 			}
 			this.#currentBranchingSeries = newBranchingSeries;
-			return Object.fromEntries([...smtString.matchAll(
-				/\(define-fun (\w+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
+			const flatInputObject = Object.fromEntries([...smtString.matchAll(
+				/\(define-fun ([\w.]+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
 			)].map(entry => [entry[1], Number(entry[2].replaceAll(" ", ""))]));
+			for (const parameterName of this.#parameterNames) if (!usedParameters.has(parameterName))
+				flatInputObject[parameterName] = Math.floor(Math.random() * 201) - 100;
+			return buildInputObject(flatInputObject);
 		}
 	}
 
@@ -292,9 +306,9 @@ export default class Executor {
 	}
 
 	#generateInitialInput(): any {
-		return Object.fromEntries(this.#sourceFile.getFunctionOrThrow(this.#functionNameToTest).getParameters().map(
-			parameter => [parameter.getName(), Math.floor(Math.random() * 201) - 100]
-		));
+		return buildInputObject(Object.fromEntries([...this.#parameterNames].map(
+			parameterName => [parameterName, Math.floor(Math.random() * 201) - 100]
+		)));
 	}
 
 	#getCompiledFilePath(sourceFilePath: string): string {
@@ -429,4 +443,38 @@ function getExpressionNode(tsNode: Ts.Node): Ts.Expression | null {
 		default:
 			return null;
 	}
+}
+
+function collectParametersFromType(prefix: string, name: string, tsType: Ts.Type, parameterNames: Set<string>): void {
+	if (tsType.isNumber()) {
+		parameterNames.add(prefix + name);
+	} else if (tsType.isObject()) {
+		for (const property of tsType.getProperties()) collectParametersFromType(
+			prefix + name + '.', property.getName(), property.getDeclarations()[0].getType(), parameterNames
+		);
+	} else {
+		throw new Error("Non-number types are not yet supported.");
+	}
+}
+
+function collectUsedParametersFromCondition(condition: SymbolicExpression, usedParameters: Set<string>): void {
+	if (condition.kind === SymbolicExpressionKind.VARIABLE)
+		usedParameters.add((condition as VariableSymbolicExpression).symbolicName);
+	else
+		for (const child of condition.getChildExpressions()) collectUsedParametersFromCondition(child, usedParameters);
+}
+
+function buildInputObject(flatObject: any): any {
+	const inputObject: any = {};
+	for (const [key, value] of Object.entries(flatObject)) {
+		const nameChain = key.split('.');
+		const terminalName = nameChain.pop()!;
+		let containerObject = inputObject;
+		for (const name of nameChain) {
+			if (!(name in containerObject)) containerObject[name] = {};
+			containerObject = containerObject[name];
+		}
+		containerObject[terminalName] = value;
+	}
+	return Object.fromEntries(Object.entries(inputObject).map(([key, value]) => [key, JSON.stringify(value)]));
 }

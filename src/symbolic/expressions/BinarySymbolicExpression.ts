@@ -122,6 +122,10 @@ export default class BinarySymbolicExpression extends SymbolicExpression {
 		);
 	}
 
+	override getChildExpressions(): SymbolicExpression[] {
+		return [this.leftOperand, this.rightOperand];
+	}
+
 	override clone(): SymbolicExpression {
 		return new BinarySymbolicExpression(this.operator, this.leftOperand, this.rightOperand);
 	}

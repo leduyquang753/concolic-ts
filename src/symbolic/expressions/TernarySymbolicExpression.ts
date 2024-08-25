@@ -17,6 +17,10 @@ export default class TernarySymbolicExpression extends SymbolicExpression {
 		return `(if ${this.condition.smtString} ${this.trueValue.smtString} ${this.falseValue.smtString})`;
 	}
 
+	override getChildExpressions(): SymbolicExpression[] {
+		return [this.condition, this.trueValue, this.falseValue];
+	}
+
 	override clone(): SymbolicExpression {
 		return new TernarySymbolicExpression(this.condition, this.trueValue, this.falseValue);
 	}

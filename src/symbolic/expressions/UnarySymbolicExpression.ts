@@ -52,6 +52,10 @@ export default class UnarySymbolicExpression extends SymbolicExpression {
 		return `(${smtOperatorMap[this.operator] ?? this.operator} ${this.operand.smtString})`;
 	}
 
+	override getChildExpressions(): SymbolicExpression[] {
+		return [this.operand];
+	}
+
 	override clone(): SymbolicExpression {
 		return new UnarySymbolicExpression(this.operator, this.operand);
 	}

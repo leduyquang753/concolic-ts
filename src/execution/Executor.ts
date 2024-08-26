@@ -33,6 +33,7 @@ export default class Executor {
 	#sourceFile: Ts.SourceFile;
 	#functionDataMap: {[name: string]: FunctionData | undefined} = {};
 	#functionNameToTest: string;
+	#topLevelParameterNames: string[] = [];
 	#parameterNames: Set<string> = new Set<string>();
 	#coveredCfgNodes: Set<string> = new Set<string>();
 	#currentBranchingSeries: BranchingRecord[] = [];
@@ -46,16 +47,27 @@ export default class Executor {
 		this.#functionNameToTest = functionNameToTest;
 	}
 
+	// Current limitation: must only be invoked once per instance.
 	async execute(): Promise<void> {
 		for (const functionDeclaration of this.#sourceFile.getFunctions())
 			transformStatement(functionDeclaration.getBody()! as Ts.Statement, false);
 		await this.#sourceFile.getProject().save();
-		for (
-			const parameterDeclaration
-			of this.#sourceFile.getFunctionOrThrow(this.#functionNameToTest).getParameters()
-		) collectParametersFromType(
-			"", parameterDeclaration.getName(), parameterDeclaration.getType(), this.#parameterNames
-		);
+		{
+			let parameterIndex = 0;
+			for (
+				const parameterDeclaration
+				of this.#sourceFile.getFunctionOrThrow(this.#functionNameToTest).getParameters()
+			) {
+				const nameNode = parameterDeclaration.getNameNode();
+				const topLevelParameterName
+					= Ts.Node.isIdentifier(nameNode) ? nameNode.getText() : `@${parameterIndex}`;
+				this.#topLevelParameterNames.push(topLevelParameterName);
+				collectParametersFromType(
+					"", topLevelParameterName, parameterDeclaration.getType(), this.#parameterNames
+				);
+				++parameterIndex;
+			}
+		}
 		let input: any | null = this.#generateInitialInput();
 		while (input !== null) {
 			console.log("Inputs: " + Object.entries(input).map(entry => `${entry[0]} = ${entry[1]}`).join("; "));
@@ -290,7 +302,7 @@ export default class Executor {
 			}
 			this.#currentBranchingSeries = newBranchingSeries;
 			const flatInputObject = Object.fromEntries([...smtString.matchAll(
-				/\(define-fun ([\w.]+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
+				/\(define-fun ([\w.@]+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
 			)].map(entry => [entry[1], Number(entry[2].replaceAll(" ", ""))]));
 			for (const parameterName of this.#parameterNames) if (!usedParameters.has(parameterName))
 				flatInputObject[parameterName] = Math.floor(Math.random() * 201) - 100;
@@ -300,7 +312,8 @@ export default class Executor {
 
 	#generateDriverScript(input: any): void {
 		FileSystem.writeFileSync(Path.join(this.#projectPath, "driver.ts"), TemplateFile.render(
-			FileSystem.readFileSync(Path.join(this.#projectPath, "driver.ts.template"), "utf8"), input
+			FileSystem.readFileSync(Path.join(this.#projectPath, "driver.ts.template"), "utf8"),
+			{params: this.#topLevelParameterNames.map(name => input[name]).join(", ")}
 		), "utf8");
 		ChildProcess.execSync("tsc", {cwd: this.#projectPath, stdio: "ignore"});
 	}

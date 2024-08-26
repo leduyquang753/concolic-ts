@@ -227,7 +227,70 @@ function extractConditionalExpression(
 				),
 				newExpression: generatedVariableName
 			};
-		};
+		}
+		case Ts.SyntaxKind.CallExpression: {
+			const callExpression = expression as Ts.CallExpression;
+			const extractedFunctionExpression = extractConditionalExpression(callExpression.getExpression());
+			let precedingCode = extractedFunctionExpression === null ? "" : extractedFunctionExpression.precedingCode;
+			let newExpression = (extractedFunctionExpression === null
+				? callExpression.getExpression().getText()
+				: extractedFunctionExpression.newExpression
+			) + '(';
+			let isFirstArgument = true;
+			let hasTransformations = extractedFunctionExpression !== null;
+			for (const argument of callExpression.getArguments()) {
+				if (isFirstArgument) isFirstArgument = false;
+				else newExpression += ", ";
+				const extractedArgument = extractConditionalExpression(argument as Ts.Expression);
+				if (extractedArgument === null) {
+					newExpression += argument.getText();
+				} else {
+					precedingCode += extractedArgument.precedingCode;
+					newExpression += extractedArgument.newExpression;
+					hasTransformations = true;
+				}
+			}
+			newExpression += ')';
+			return hasTransformations ? {precedingCode, newExpression} : null;
+		}
+		case Ts.SyntaxKind.ObjectLiteralExpression: {
+			let precedingCode = "";
+			let newExpression = "{";
+			let isFirstElement = true;
+			let hasTransformations = false;
+			for (const element of (expression as Ts.ObjectLiteralExpression).getProperties()) {
+				if (isFirstElement) isFirstElement = false;
+				else newExpression += ", ";
+				let transformableExpression: Ts.Expression | null = null;
+				switch (element.getKind()) {
+					case Ts.SyntaxKind.PropertyAssignment: {
+						const propertyAssignment = element as Ts.PropertyAssignment;
+						newExpression += propertyAssignment.getName() + ": ";
+						transformableExpression = propertyAssignment.getInitializer()!;
+						break;
+					}
+					case Ts.SyntaxKind.SpreadAssignment: {
+						newExpression += "...";
+						transformableExpression = (element as Ts.SpreadAssignment).getExpression();
+						break;
+					}
+				}
+				if (transformableExpression === null) {
+					newExpression += element.getText();
+					continue;
+				}
+				const transformedExpression = extractConditionalExpression(transformableExpression);
+				if (transformedExpression === null) {
+					newExpression += transformableExpression.getText();
+				} else {
+					precedingCode += transformedExpression.precedingCode;
+					newExpression += transformedExpression.newExpression;
+					hasTransformations = true;
+				}
+			}
+			newExpression += '}';
+			return hasTransformations ? {precedingCode, newExpression} : null;
+		}
 	}
 	return null;
 }

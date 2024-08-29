@@ -3,13 +3,13 @@
 		"source-map": "^0.7.4",
 		"template-file": "^6.0.1",
 		"ts-morph": "^23.0.0",
-		"vitest": "^1.6.0",
-		"ws": "^8.17.1"
+		"vitest": "^2.0.5",
+		"ws": "^8.18.0"
 	},
 	"devDependencies": {
-		"@types/node": "^20.14.9",
-		"@types/ws": "^8.5.10",
-		"typescript": "^5.5.2"
+		"@types/node": "^22.5.1",
+		"@types/ws": "^8.5.12",
+		"typescript": "^5.5.4"
 	},
 	"imports": {
 		"#r/*": "./dist/*.js"

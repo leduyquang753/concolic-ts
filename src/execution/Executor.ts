@@ -2,6 +2,7 @@ import * as ChildProcess from "child_process";
 import * as FileSystem from "fs";
 import * as Http from "http";
 import * as Path from "path";
+import {Shescape} from "shescape";
 import {SourceMapConsumer} from "source-map";
 import * as TemplateFile from "template-file";
 import * as Ts from "ts-morph";
@@ -26,6 +27,8 @@ import DebuggerWebsocket from "./DebuggerWebsocket";
 
 type FunctionData = {cfg: Cfg, breakpoints: Breakpoint[]};
 type BranchingRecord = {parentCalls: string, cfgNode: CfgNode, isSecondary: boolean};
+
+const shescape = new Shescape({shell: true});
 
 export default class Executor {
 	#projectPath: string;
@@ -82,14 +85,12 @@ export default class Executor {
 		const compiledFilePath = this.#getCompiledFilePath(sourceFilePath);
 
 		console.log("Starting debugger...");
-		const process = ChildProcess.spawn("node", [
-			"--inspect-brk=9339", "--enable-source-maps",
-			this.#getCompiledFilePath(
-				this.#sourceFile.getProject().getSourceFileOrThrow("driver.ts").getFilePath()
-			)
-		], {cwd: this.#projectPath, stdio: "pipe"});
+		const process = ChildProcess.spawn("npx", [
+			"vitest", "run", "test", "--dir", shescape.quote(this.#projectPath),
+			"--inspect-brk=127.0.0.1:9339", "--no-file-parallelism"
+		], {cwd: this.#projectPath, stdio: "pipe", shell: true});
 		process.stdout!.on("data", data => {});
-		process.stderr!.on("data", data => {});
+		process.stderr!.on("data", data => {console.log(data.toString());});
 		const debuggerUrl = await new Promise<string>((resolve, reject) => {
 			let failureCount = 0;
 			const routine = () => {
@@ -122,7 +123,7 @@ export default class Executor {
 		let sourceMapPath = "";
 		let scriptParsed = false;
 		{
-			const scriptUrl = Url.pathToFileURL(compiledFilePath).toString();
+			const scriptUrl = Url.pathToFileURL(sourceFilePath).toString();
 			const eventListener = (rawData: any): void => {
 				const data = rawData as {scriptId: string, url: string, sourceMapURL: string};
 				if (data.url === scriptUrl) {
@@ -144,15 +145,11 @@ export default class Executor {
 			websocket.sendCommand("Debugger.stepOver");
 			await websocket.waitForEvent("Debugger.paused");
 		}
-		const sourceMapConsumer = await new SourceMapConsumer(
-			FileSystem.readFileSync(Path.join(Path.dirname(compiledFilePath), sourceMapPath), "utf8")
-		);
-		const sourceMapSourcePath = Path.relative(Path.dirname(compiledFilePath), sourceFilePath).replaceAll('\\', '/');
 		const breakpointMap: {[id: string]: Breakpoint} = {};
 		const functionsWithSetBreakpoints = new Set<string>();
 		for (const functionDeclaration of this.#sourceFile.getFunctions()) await this.#setBreakpoints(
 			functionDeclaration.getName()!, functionsWithSetBreakpoints,
-			scriptId, sourceMapConsumer, sourceMapSourcePath, websocket, breakpointMap
+			scriptId, websocket, breakpointMap
 		);
 		console.log("Set initial breakpoints, now running.");
 
@@ -201,7 +198,7 @@ export default class Executor {
 							= parentCallPathStack.join(' ') + (parentCallPathStack.length === 0 ? "" : " ");
 						await this.#setBreakpoints(
 							functionName, functionsWithSetBreakpoints,
-							scriptId, sourceMapConsumer, sourceMapSourcePath, websocket, breakpointMap
+							scriptId, websocket, breakpointMap
 						);
 						cfg = this.#getFunctionData(functionName).cfg;
 						currentCfgNode = cfg.beginNode.primaryNext!;
@@ -311,11 +308,11 @@ export default class Executor {
 	}
 
 	#generateDriverScript(input: any): void {
-		FileSystem.writeFileSync(Path.join(this.#projectPath, "driver.ts"), TemplateFile.render(
-			FileSystem.readFileSync(Path.join(this.#projectPath, "driver.ts.template"), "utf8"),
+		FileSystem.writeFileSync(Path.join(this.#projectPath, "test.spec.ts"), TemplateFile.render(
+			FileSystem.readFileSync(Path.join(this.#projectPath, "test.spec.ts.template"), "utf8"),
 			{params: this.#topLevelParameterNames.map(name => input[name]).join(", ")}
 		), "utf8");
-		ChildProcess.execSync("tsc", {cwd: this.#projectPath, stdio: "ignore"});
+		//ChildProcess.execSync("tsc", {cwd: this.#projectPath, stdio: "ignore"});
 	}
 
 	#generateInitialInput(): any {
@@ -343,17 +340,14 @@ export default class Executor {
 
 	async #setBreakpoints(
 		functionName: string, setFunctions: Set<string>,
-		scriptId: string, sourceMapConsumer: SourceMapConsumer, sourceMapSourcePath: string,
+		scriptId: string,
 		websocket: DebuggerWebsocket, breakpointMap: {[id: string]: Breakpoint}
 	): Promise<void> {
 		if (setFunctions.has(functionName)) return;
 		setFunctions.add(functionName);
 		for (const breakpoint of this.#getFunctionData(functionName).breakpoints) {
-			const compiledLocation = sourceMapConsumer.generatedPositionFor({
-				source: sourceMapSourcePath, line: breakpoint.line, column: breakpoint.column - 1
-			});
 			websocket.sendCommand("Debugger.setBreakpoint", {
-				location: {scriptId, lineNumber: compiledLocation.line! - 1, columnNumber: compiledLocation.column}
+				location: {scriptId, lineNumber: breakpoint.line - 1, columnNumber: breakpoint.column - 1}
 			});
 			breakpointMap[(await websocket.getCommandResponse()).breakpointId as string] = breakpoint;
 		}

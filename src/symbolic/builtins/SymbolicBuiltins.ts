@@ -2,18 +2,10 @@ import BinarySymbolicExpression from "#r/symbolic/expressions/BinarySymbolicExpr
 import SymbolicExpression from "#r/symbolic/expressions/SymbolicExpression";
 import UnarySymbolicExpression from "#r/symbolic/expressions/UnarySymbolicExpression";
 
-import mathBuiltins from "./MathBuiltins";
-
 export type SymbolicBuiltinClassFunction = (args: SymbolicExpression[]) => SymbolicExpression;
 export type SymbolicBuiltinClass = {
 	[functionName: string]: SymbolicBuiltinClassFunction | undefined
 };
-
-const symbolicBuiltinClasses: {[className: string]: SymbolicBuiltinClass | undefined} = {
-	"Math": mathBuiltins
-};
-
-export default symbolicBuiltinClasses;
 
 function singleArgumentBuiltinImpl(name: string, operator: string, args: SymbolicExpression[]): SymbolicExpression {
 	if (args.length !== 1) throw new Error(`${name} expects exactly one argument.`);
@@ -32,3 +24,11 @@ function doubleArgumentBuiltinImpl(name: string, operator: string, args: Symboli
 export function doubleArgumentBuiltin(name: string, operator: string): SymbolicBuiltinClassFunction {
 	return doubleArgumentBuiltinImpl.bind(null, name, operator);
 }
+
+import mathBuiltins from "./MathBuiltins";
+
+const symbolicBuiltinClasses: {[className: string]: SymbolicBuiltinClass | undefined} = {
+	"Math": mathBuiltins
+};
+
+export default symbolicBuiltinClasses;

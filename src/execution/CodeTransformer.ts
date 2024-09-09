@@ -94,6 +94,21 @@ export function transformStatement(statement: Ts.Statement, isStandalone: boolea
 			));
 			break;
 		}
+		case Ts.SyntaxKind.WhileStatement: {
+			const whileStatement = statement as Ts.WhileStatement;
+			const bodyStatement = whileStatement.getStatement();
+			transformStatement(bodyStatement, true);
+			const extractedCondition = extractConditionalExpression(whileStatement.getExpression());
+			if (extractedCondition === null) break;
+			whileStatement.replaceWithText(
+				"while (true) {\n"
+				+ extractedCondition.precedingCode
+				+ `if (!${extractedCondition.newExpression}) break;\n`
+				+ `${bodyStatement.getText()}\n`
+				+ "}\n"
+			);
+			break;
+		}
 	}
 }
 

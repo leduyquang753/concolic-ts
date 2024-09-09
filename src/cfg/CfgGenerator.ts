@@ -33,6 +33,8 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 				if (isEmptyCfg(subCfg)) continue;
 				lastCfgNode.primaryNext = subCfg.beginNode;
 				subCfg.escapeNode.primaryNext = cfg.escapeNode;
+				subCfg.continueNode.primaryNext = cfg.continueNode;
+				subCfg.breakNode.primaryNext = cfg.breakNode;
 				lastCfgNode = subCfg.endNode;
 			}
 			lastCfgNode.primaryNext = cfg.endNode;
@@ -49,8 +51,10 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 				ifCfgNode.primaryNext = cfg.endNode;
 			} else {
 				ifCfgNode.primaryNext = thenSubCfg.beginNode;
-				thenSubCfg.escapeNode.primaryNext = cfg.escapeNode;
 				thenSubCfg.endNode.primaryNext = cfg.endNode;
+				thenSubCfg.escapeNode.primaryNext = cfg.escapeNode;
+				thenSubCfg.continueNode.primaryNext = cfg.continueNode;
+				thenSubCfg.breakNode.primaryNext = cfg.breakNode;
 			}
 			const elseTsNode = ifTsNode.getElseStatement();
 			if (elseTsNode === undefined) {
@@ -61,8 +65,10 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 					ifCfgNode.secondaryNext = cfg.endNode;
 				} else {
 					ifCfgNode.secondaryNext = elseSubCfg.beginNode;
-					elseSubCfg.escapeNode.primaryNext = cfg.escapeNode;
 					elseSubCfg.endNode.primaryNext = cfg.endNode;
+					elseSubCfg.escapeNode.primaryNext = cfg.escapeNode;
+					elseSubCfg.continueNode.primaryNext = cfg.continueNode;
+					elseSubCfg.breakNode.primaryNext = cfg.breakNode;
 				}
 			}
 			break;
@@ -138,6 +144,7 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 				}
 				caseCfgNode.primaryNext = subCfg.beginNode;
 				subCfg.escapeNode.primaryNext = cfg.escapeNode;
+				subCfg.continueNode.primaryNext = cfg.continueNode;
 				subCfg.breakNode.primaryNext = cfg.endNode;
 				previousEndCaseNode = subCfg.endNode;
 			}
@@ -154,6 +161,8 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 				if (isEmptyCfg(subCfg)) continue;
 				lastCfgNode.primaryNext = subCfg.beginNode;
 				subCfg.escapeNode.primaryNext = cfg.escapeNode;
+				subCfg.continueNode.primaryNext = cfg.escapeNode;
+				subCfg.breakNode.primaryNext = cfg.breakNode;
 				lastCfgNode = subCfg.endNode;
 			}
 			lastCfgNode.primaryNext = cfg.endNode;

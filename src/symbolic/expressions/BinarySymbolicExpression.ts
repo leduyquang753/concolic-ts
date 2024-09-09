@@ -3,6 +3,7 @@ import SymbolicExpression from "./SymbolicExpression";
 import SymbolicExpressionKind from "./SymbolicExpressionKind";
 
 const smtOperatorMap: {[jsOperator: string]: string | undefined} = {
+	"%": "mod",
 	"**": "^",
 	"==": "=",
 	"===": "=",

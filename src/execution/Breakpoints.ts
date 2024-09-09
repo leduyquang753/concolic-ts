@@ -43,10 +43,10 @@ export function getBreakpointsFromCfgNode(cfgNode: CfgNode): Breakpoint[] {
 			}
 			case Ts.SyntaxKind.ForStatement:
 			case Ts.SyntaxKind.WhileStatement: {
-				const forNode = tsNode as Ts.ForStatement | Ts.WhileStatement;
+				const loopNode = tsNode as Ts.ForStatement | Ts.WhileStatement;
 				return [
-					{cfgNode, isSecondaryBranch: false, ...getLocationOfNode(forNode.getStatement())},
-					{cfgNode, isSecondaryBranch: true, ...getNearestBreakableLocation(forNode)}
+					{cfgNode, isSecondaryBranch: false, ...getLocationOfNode(loopNode.getStatement())},
+					{cfgNode, isSecondaryBranch: true, ...getNearestBreakableLocation(loopNode)}
 				];
 			}
 			case Ts.SyntaxKind.DoStatement: {

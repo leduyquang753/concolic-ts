@@ -1,5 +1,7 @@
 const config = {
-	pathToZ3: "<Path to the Z3 executable.>"
+	pathToZ3: "<Path to the Z3 executable.>",
+	serverPort: 4000,
+	projectPath: "<Path to the project.>"
 };
 
 export default config;

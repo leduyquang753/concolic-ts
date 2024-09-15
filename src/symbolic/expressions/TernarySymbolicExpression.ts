@@ -1,5 +1,5 @@
-import SymbolicExpression from "./SymbolicExpression";
-import SymbolicExpressionKind from "./SymbolicExpressionKind";
+import SymbolicExpression from "./SymbolicExpression.js";
+import SymbolicExpressionKind from "./SymbolicExpressionKind.js";
 
 export default class TernarySymbolicExpression extends SymbolicExpression {
 	condition: SymbolicExpression

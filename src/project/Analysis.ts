@@ -1,71 +1,32 @@
-import { Project, FunctionDeclaration, Type } from "ts-morph";
+import * as Ts from "ts-morph";
 
-export function getAllFunctions(project: Project) {
-	let allFunctions: FunctionDeclaration[] = [];
-	for (const sourceFile of project.getSourceFiles()) {
-		allFunctions = allFunctions.concat(sourceFile.getFunctions());
-	}
-	return allFunctions;
+export function getTestableFunctions(sourceFile: Ts.SourceFile): Ts.FunctionDeclaration[] {
+	return sourceFile.getFunctions().filter(isValidFunction);
 }
 
-export function getTestableFunctions(project: Project) {
-	let testableFunctions: FunctionDeclaration[] = [];
-	for (const sourceFile of project.getSourceFiles()) {
-		for (const functionDeclaration of sourceFile.getFunctions()) {
-			if (isValidFunction(functionDeclaration)) {
-				testableFunctions.push(functionDeclaration);
-			}
-		}
-	}
-	return testableFunctions;
+function isPrimitiveType(type: Ts.Type): boolean {
+	return type.isString()
+		|| type.isNumber()
+		|| type.isBoolean()
+		|| type.isNull()
+		|| type.isUndefined()
+		|| type.isEnum()
+		|| type.isBigInt();
 }
 
-function isPrimitiveType(type: Type): boolean {
-	return (
-		type.isString() ||
-		type.isNumber() ||
-		type.isBoolean() ||
-		type.isNull() ||
-		type.isUndefined() ||
-		type.isEnum() ||
-		type.isBigInt()
-	);
-}
-
-function isValidType(type: Type): boolean {
-	if (isPrimitiveType(type)) {
-		return true;
-	}
-	if (type.isArray()) {
-		if (!isValidType(type.getArrayElementType() as Type)) {
-			return false;
-		} else {
-			return true;
-		}
-	}
+function isValidType(type: Ts.Type): boolean {
+	if (isPrimitiveType(type)) return true;
+	if (type.isArray()) return isValidType(type.getArrayElementType() as Ts.Type);
 	if (!type.isObject()) return false;
-	for (const prop of type.getProperties()) {
-		const propType = prop.getTypeAtLocation(
-			prop.getDeclarations()[0]
-		);
-		if (!isValidType(propType)) {
-			return false;
-		}
-	}
+	for (const prop of type.getProperties())
+		if (!isValidType(prop.getTypeAtLocation(prop.getDeclarations()[0]))) return false;
 	return true;
 }
 
-function isValidFunction(functionDeclaration: FunctionDeclaration): boolean {
+function isValidFunction(functionDeclaration: Ts.FunctionDeclaration): boolean {
 	if (functionDeclaration.getParameters().length > 0) {
-		for (const parameter of functionDeclaration.getParameters()) {
-			if (!isValidType(parameter.getType())) {
-				return false;
-			}
-		}
+		for (const parameter of functionDeclaration.getParameters())
+			if (!isValidType(parameter.getType())) return false;
 	}
-	const returnValue = functionDeclaration.getReturnType();
-	if (!isValidType(returnValue)) {
-		return false;
-	}
-	return true;
+	return isValidType(functionDeclaration.getReturnType());
 }

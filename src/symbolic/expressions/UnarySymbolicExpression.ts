@@ -1,7 +1,7 @@
-import BinarySymbolicExpression from "./BinarySymbolicExpression";
-import ConstantSymbolicExpression from "./ConstantSymbolicExpression";
-import SymbolicExpression from "./SymbolicExpression";
-import SymbolicExpressionKind from "./SymbolicExpressionKind";
+import BinarySymbolicExpression from "./BinarySymbolicExpression.js";
+import ConstantSymbolicExpression from "./ConstantSymbolicExpression.js";
+import SymbolicExpression from "./SymbolicExpression.js";
+import SymbolicExpressionKind from "./SymbolicExpressionKind.js";
 
 const inverseOperatorMap: {[operator: string]: string} = {
 	"<": ">=",

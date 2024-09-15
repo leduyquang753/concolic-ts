@@ -1,6 +1,6 @@
 import {Node} from "ts-morph";
 
-import CfgNodeKind, {isBranchingCfgNodeKind} from "./CfgNodeKind";
+import CfgNodeKind, {isBranchingCfgNodeKind} from "./CfgNodeKind.js";
 
 export default class CfgNode {
 	static #nextId: number = 0;

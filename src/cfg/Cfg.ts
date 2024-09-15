@@ -1,5 +1,5 @@
-import CfgNode from "./CfgNode";
-import {isEphemeralCfgNodeKind} from "./CfgNodeKind";
+import CfgNode from "./CfgNode.js";
+import {isEphemeralCfgNodeKind} from "./CfgNodeKind.js";
 
 export type Cfg = {
 	beginNode: CfgNode,

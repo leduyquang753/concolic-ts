@@ -1,6 +1,6 @@
-import ConstantSymbolicExpression from "./ConstantSymbolicExpression";
-import SymbolicExpression from "./SymbolicExpression";
-import SymbolicExpressionKind from "./SymbolicExpressionKind";
+import ConstantSymbolicExpression from "./ConstantSymbolicExpression.js";
+import SymbolicExpression from "./SymbolicExpression.js";
+import SymbolicExpressionKind from "./SymbolicExpressionKind.js";
 
 const smtOperatorMap: {[jsOperator: string]: string | undefined} = {
 	"%": "mod",

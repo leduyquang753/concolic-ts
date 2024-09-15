@@ -3,7 +3,7 @@ import * as FileSystem from "fs";
 import * as Http from "http";
 import * as Path from "path";
 import {SourceMapConsumer} from "source-map";
-import * as TemplateFile from "template-file";
+import TemplateFile from "template-file";
 import * as Ts from "ts-morph";
 import * as Url from "url";
 
@@ -19,12 +19,12 @@ import SymbolicExpressionKind from "#r/symbolic/expressions/SymbolicExpressionKi
 import UnarySymbolicExpression from "#r/symbolic/expressions/UnarySymbolicExpression";
 import VariableSymbolicExpression from "#r/symbolic/expressions/VariableSymbolicExpression";
 
-import type {ExecutionEntry} from "./BranchSelector";
-import BranchSelector from "./BranchSelector";
-import type {Breakpoint} from "./Breakpoints";
-import {getBreakpointsFromCfg} from "./Breakpoints";
-import {transformStatement} from "./CodeTransformer";
-import DebuggerWebsocket from "./DebuggerWebsocket";
+import type {ExecutionEntry} from "./BranchSelector.js";
+import BranchSelector from "./BranchSelector.js";
+import type {Breakpoint} from "./Breakpoints.js";
+import {getBreakpointsFromCfg} from "./Breakpoints.js";
+import {transformStatement} from "./CodeTransformer.js";
+import DebuggerWebsocket from "./DebuggerWebsocket.js";
 
 type FunctionData = {cfg: Cfg, breakpoints: Breakpoint[]};
 
@@ -32,6 +32,8 @@ export default class Executor {
 	#projectPath: string;
 	#projectConfiguration: Ts.ts.ParsedCommandLine;
 	#sourceFile: Ts.SourceFile;
+	#concolicDriverTemplate: string;
+	#testDriverTemplate: string;
 	#functionDataMap: {[name: string]: FunctionData | undefined} = {};
 	#functionNameToTest: string;
 	#topLevelParameterNames: string[] = [];
@@ -41,17 +43,22 @@ export default class Executor {
 	#currentExecutionPath: ExecutionEntry[] = [];
 	#branchSelector: BranchSelector = new BranchSelector();
 
-	constructor(projectPath: string, sourceFile: Ts.SourceFile, functionNameToTest: string) {
+	constructor(
+		projectPath: string, sourceFile: Ts.SourceFile, functionNameToTest: string,
+		concolicDriverTemplate: string, testDriverTemplate: string
+	) {
 		this.#projectPath = projectPath;
 		this.#projectConfiguration = Ts.ts.getParsedCommandLineOfConfigFile(
 			this.#projectPath + "\\tsconfig.json", undefined, Ts.ts.sys as any
 		)!;
 		this.#sourceFile = sourceFile;
 		this.#functionNameToTest = functionNameToTest;
+		this.#concolicDriverTemplate = concolicDriverTemplate;
+		this.#testDriverTemplate = testDriverTemplate;
 	}
 
 	// Current limitation: must only be invoked once per instance.
-	async execute(): Promise<void> {
+	async execute(): Promise<string[]> {
 		for (const functionDeclaration of this.#sourceFile.getFunctions())
 			transformStatement(functionDeclaration.getBody()! as Ts.Statement, false);
 		await this.#sourceFile.getProject().save();
@@ -76,13 +83,18 @@ export default class Executor {
 				++parameterIndex;
 			}
 		}
+		const testDrivers = [];
 		let input: any | null = this.#generateInitialInput();
 		while (input !== null) {
 			console.log("Inputs: " + Object.entries(input).map(entry => `${entry[0]} = ${entry[1]}`).join("; "));
+			testDrivers.push(TemplateFile.render(
+				this.#testDriverTemplate, {params: this.#topLevelParameterNames.map(name => input[name]).join(", ")}
+			));
 			this.#generateDriverScript(input);
 			input = await this.#executeFunctionAndGetNextInput();
 		}
 		console.log("Done.");
+		return testDrivers;
 	}
 
 	async #executeFunctionAndGetNextInput(): Promise<any | null> {
@@ -93,7 +105,7 @@ export default class Executor {
 		const process = ChildProcess.spawn("node", [
 			"--inspect-brk=9339", "--enable-source-maps",
 			this.#getCompiledFilePath(
-				this.#sourceFile.getProject().getSourceFileOrThrow("driver.ts").getFilePath()
+				this.#sourceFile.getProject().getSourceFileOrThrow("__concolic.ts").getFilePath()
 			)
 		], {cwd: this.#projectPath, stdio: "pipe"});
 		process.stdout!.on("data", data => {});
@@ -322,9 +334,8 @@ export default class Executor {
 	}
 
 	#generateDriverScript(input: any): void {
-		FileSystem.writeFileSync(Path.join(this.#projectPath, "driver.ts"), TemplateFile.render(
-			FileSystem.readFileSync(Path.join(this.#projectPath, "driver.ts.template"), "utf8"),
-			{params: this.#topLevelParameterNames.map(name => input[name]).join(", ")}
+		FileSystem.writeFileSync(Path.join(this.#projectPath, "__concolic.ts"), TemplateFile.render(
+			this.#concolicDriverTemplate, {params: this.#topLevelParameterNames.map(name => input[name]).join(", ")}
 		), "utf8");
 		ChildProcess.execSync("tsc", {cwd: this.#projectPath, stdio: "ignore"});
 	}

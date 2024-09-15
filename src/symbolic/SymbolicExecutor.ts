@@ -1,14 +1,14 @@
 import * as Ts from "ts-morph";
 
-import symbolicBuiltinClasses from "./builtins/SymbolicBuiltins";
-import BinarySymbolicExpression from "./expressions/BinarySymbolicExpression";
-import ConstantSymbolicExpression from "./expressions/ConstantSymbolicExpression";
-import ObjectSymbolicExpression from "./expressions/ObjectSymbolicExpression";
-import SymbolicExpression from "./expressions/SymbolicExpression";
-import SymbolicExpressionKind from "./expressions/SymbolicExpressionKind";
-import TernarySymbolicExpression from "./expressions/TernarySymbolicExpression";
-import UnarySymbolicExpression from "./expressions/UnarySymbolicExpression";
-import VariableSymbolicExpression from "./expressions/VariableSymbolicExpression";
+import symbolicBuiltinClasses from "./builtins/SymbolicBuiltins.js";
+import BinarySymbolicExpression from "./expressions/BinarySymbolicExpression.js";
+import ConstantSymbolicExpression from "./expressions/ConstantSymbolicExpression.js";
+import ObjectSymbolicExpression from "./expressions/ObjectSymbolicExpression.js";
+import SymbolicExpression from "./expressions/SymbolicExpression.js";
+import SymbolicExpressionKind from "./expressions/SymbolicExpressionKind.js";
+import TernarySymbolicExpression from "./expressions/TernarySymbolicExpression.js";
+import UnarySymbolicExpression from "./expressions/UnarySymbolicExpression.js";
+import VariableSymbolicExpression from "./expressions/VariableSymbolicExpression.js";
 
 type SymbolicVariable = {
 	scopeLevel: number,

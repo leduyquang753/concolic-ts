@@ -25,7 +25,7 @@ export function doubleArgumentBuiltin(name: string, operator: string): SymbolicB
 	return doubleArgumentBuiltinImpl.bind(null, name, operator);
 }
 
-import mathBuiltins from "./MathBuiltins";
+import mathBuiltins from "./MathBuiltins.js";
 
 const symbolicBuiltinClasses: {[className: string]: SymbolicBuiltinClass | undefined} = {
 	"Math": mathBuiltins

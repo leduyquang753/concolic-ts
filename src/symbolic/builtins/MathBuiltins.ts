@@ -1,7 +1,7 @@
 import SymbolicExpression from "#r/symbolic/expressions/SymbolicExpression";
 
-import type {SymbolicBuiltinClass} from "./SymbolicBuiltins";
-import {singleArgumentBuiltin} from "./SymbolicBuiltins";
+import type {SymbolicBuiltinClass} from "./SymbolicBuiltins.js";
+import {singleArgumentBuiltin} from "./SymbolicBuiltins.js";
 
 const mathBuiltins: SymbolicBuiltinClass = {
 	"abs": singleArgumentBuiltin("Math.abs", "abs"),

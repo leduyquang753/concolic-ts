@@ -1,10 +1,10 @@
 import * as Ts from "ts-morph";
 
 import symbolicBuiltinClasses from "#r/symbolic/builtins/SymbolicBuiltins";
-import type {Cfg} from "./Cfg";
-import {isEmptyCfg} from "./Cfg";
-import CfgNode from "./CfgNode";
-import CfgNodeKind from "./CfgNodeKind";
+import type {Cfg} from "./Cfg.js";
+import {isEmptyCfg} from "./Cfg.js";
+import CfgNode from "./CfgNode.js";
+import CfgNodeKind from "./CfgNodeKind.js";
 
 export function generateCfgFromFunction(functionDeclaration: Ts.FunctionDeclaration) {
 	const cfg = generateCfgFromNode(functionDeclaration.getBody()!);

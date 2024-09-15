@@ -1,4 +1,4 @@
-import SymbolicExpressionKind from "./SymbolicExpressionKind";
+import SymbolicExpressionKind from "./SymbolicExpressionKind.js";
 
 abstract class SymbolicExpression {
 	readonly kind: SymbolicExpressionKind;

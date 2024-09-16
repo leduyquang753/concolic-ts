@@ -1,5 +1,7 @@
 import * as Ts from "ts-morph";
 
+type ExtractionResult = {precedingCode: string, newExpression: string};
+
 let nextGeneratedVariableId = 0;
 
 function generateVariableName() {
@@ -17,40 +19,8 @@ export function transformStatement(statement: Ts.Statement, isStandalone: boolea
 			for (const subStatement of (statement as Ts.Block).getStatements()) transformStatement(subStatement, false);
 			break;
 		case Ts.SyntaxKind.VariableStatement: {
-			const variableStatement = statement as Ts.VariableStatement;
-			const declarations = variableStatement.getDeclarations();
-			const extractedCodes = declarations.map(declaration => {
-				const initializer = declaration.getInitializer();
-				return initializer === undefined ? null : extractConditionalExpression(initializer);
-			});
-			if (extractedCodes.every(code => code === null)) break;
-			let declarationKeywords
-				= variableStatement.getDeclarationKindKeywords().map(keyword => keyword.getText()).join(' ');
-			let newCode = "";
-			for (let i = 0; i !== declarations.length; ++i) {
-				const declaration = declarations[i];
-				const type = declaration.getTypeNode();
-				const extractedCode = extractedCodes[i];
-				if (i !== 0) newCode += '\n';
-				if (extractedCode === null) {
-					const initializer = declaration.getInitializer();
-					newCode += (
-						declarationKeywords + ' ' + declaration.getName()
-						+ (type === undefined ? "" : ": " + type.getText())
-						+ (initializer === undefined ? "" : " = " + initializer.getText())
-						+ ';'
-					);
-				} else {
-					newCode += (
-						extractedCode.precedingCode
-						+ declarationKeywords + ' ' + declaration.getName()
-						+ (type === undefined ? "" : ": " + type.getText())
-						+ " = " + extractedCode.newExpression
-						+ ';'
-					);
-				}
-			}
-			statement.replaceWithText(ensureCodeBlock(newCode, isStandalone));
+			const newCode = transformVariableDeclarationList(statement as Ts.VariableStatement);
+			if (newCode !== null) statement.replaceWithText(ensureCodeBlock(newCode, isStandalone));
 			break;
 		}
 		case Ts.SyntaxKind.ExpressionStatement: {
@@ -109,12 +79,93 @@ export function transformStatement(statement: Ts.Statement, isStandalone: boolea
 			);
 			break;
 		}
+		case Ts.SyntaxKind.ForStatement: {
+			const forStatement = statement as Ts.ForStatement;
+			const bodyStatement = forStatement.getStatement();
+			transformStatement(bodyStatement, true);
+			const initializer = forStatement.getInitializer();
+			let extractedInitializer: string | null = null;
+			if (initializer !== undefined) {
+				if (Ts.Node.isExpression(initializer)) {
+					const extractionResult = extractConditionalExpression(initializer);
+					if (extractionResult !== null)
+						extractedInitializer = extractionResult.precedingCode + extractionResult.newExpression + ";";
+				} else {
+					extractedInitializer = transformVariableDeclarationList(initializer);
+				}
+			}
+			const condition = forStatement.getCondition();
+			const extractedCondition = condition === undefined ? null : extractConditionalExpression(condition);
+			const incrementor = forStatement.getIncrementor();
+			const extractedIncrementor = incrementor === undefined ? null : extractConditionalExpression(incrementor);
+			if (extractedInitializer === null && extractedCondition === null && extractedIncrementor === null) break;
+			let newCode = "";
+			const shouldMakeOuterBlock = extractedInitializer !== null || extractedCondition !== null;
+			if (shouldMakeOuterBlock) newCode += "{\n";
+			if (extractedInitializer !== null) {
+				newCode += extractedInitializer;
+				newCode += "\n";
+			}
+			if (extractedCondition !== null) {
+				newCode += extractedCondition.precedingCode;
+				newCode += `while (${extractedCondition.newExpression}) `;
+			} else {
+				newCode += `while (${condition === undefined ? "true" : condition.getText()}) `;
+			}
+			if (extractedIncrementor !== null) newCode += "{\n";
+			newCode += bodyStatement.getText();
+			newCode += "\n";
+			if (extractedIncrementor !== null) {
+				newCode += extractedIncrementor.precedingCode;
+				newCode += extractedIncrementor.newExpression;
+				newCode += ";\n}\n";
+			}
+			if (shouldMakeOuterBlock) newCode += "}\n";
+			forStatement.replaceWithText(newCode);
+			break;
+		}
 	}
 }
 
-function extractConditionalExpression(
-	expression: Ts.Expression
-): {precedingCode: string, newExpression: string} | null {
+function transformVariableDeclarationList(
+	variableDeclarationList: Ts.VariableDeclarationList | Ts.VariableStatement
+): string | null {
+	const declarations = variableDeclarationList.getDeclarations();
+	const extractedCodes = declarations.map(declaration => {
+		const initializer = declaration.getInitializer();
+		return initializer === undefined ? null : extractConditionalExpression(initializer);
+	});
+	if (extractedCodes.every(code => code === null)) return null;
+	let declarationKeywords
+		= variableDeclarationList.getDeclarationKindKeywords().map(keyword => keyword.getText()).join(' ');
+	let newCode = "";
+	for (let i = 0; i !== declarations.length; ++i) {
+		const declaration = declarations[i];
+		const type = declaration.getTypeNode();
+		const extractedCode = extractedCodes[i];
+		if (i !== 0) newCode += '\n';
+		if (extractedCode === null) {
+			const initializer = declaration.getInitializer();
+			newCode += (
+				declarationKeywords + ' ' + declaration.getName()
+				+ (type === undefined ? "" : ": " + type.getText())
+				+ (initializer === undefined ? "" : " = " + initializer.getText())
+				+ ';'
+			);
+		} else {
+			newCode += (
+				extractedCode.precedingCode
+				+ declarationKeywords + ' ' + declaration.getName()
+				+ (type === undefined ? "" : ": " + type.getText())
+				+ " = " + extractedCode.newExpression
+				+ ';'
+			);
+		}
+	}
+	return newCode;
+}
+
+function extractConditionalExpression(expression: Ts.Expression): ExtractionResult | null {
 	switch (expression.getKind()) {
 		case Ts.SyntaxKind.ParenthesizedExpression: {
 			const parenthesizedExpression = expression as Ts.ParenthesizedExpression;

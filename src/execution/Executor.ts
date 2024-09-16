@@ -39,7 +39,7 @@ export default class Executor {
 	#uncoveredCfgNodes!: Set<CfgNode>;
 	#halfCoveredCfgNodes: Map<CfgNode, boolean> = new Map<CfgNode, boolean>();
 	#currentExecutionPath: ExecutionEntry[] = [];
-	#branchSelector!: BranchSelector;
+	#branchSelector: BranchSelector = new BranchSelector();
 
 	constructor(projectPath: string, sourceFile: Ts.SourceFile, functionNameToTest: string) {
 		this.#projectPath = projectPath;
@@ -60,7 +60,6 @@ export default class Executor {
 			node.tsNode!.getKind() === Ts.SyntaxKind.WhileStatement
 			&& (node.tsNode! as Ts.WhileStatement).getExpression().getKind() === Ts.SyntaxKind.TrueKeyword
 		)));
-		this.#branchSelector = new BranchSelector(cfg);
 		{
 			let parameterIndex = 0;
 			for (
@@ -246,11 +245,13 @@ export default class Executor {
 						if (newExecutionPath.length < this.#currentExecutionPath.length) {
 							const currentEntry = this.#currentExecutionPath[newExecutionPath.length];
 							if (
-								currentEntry.cfgNode !== currentCfgNode
+								currentEntry.parentCalls !== parentCallPathString
+								|| currentEntry.cfgNode !== currentCfgNode
 								|| currentEntry.isSecondaryBranch !== hitBreakpoint.isSecondaryBranch
 							) throw new Error("Actual code execution doesn't match what's predicted.");
 						}
 						newExecutionPath.push({
+							parentCalls: parentCallPathString,
 							cfgNode: currentCfgNode,
 							isSecondaryBranch: hitBreakpoint.isSecondaryBranch,
 							branchingCondition: getBranchingCondition(currentCfgNode, symbolicExecutor).trySimplify(true)
@@ -347,6 +348,7 @@ export default class Executor {
 			compactCfg(cfg);
 			functionData = {cfg, breakpoints: getBreakpointsFromCfg(cfg)};
 			this.#functionDataMap[functionName] = functionData;
+			this.#branchSelector.addCfg(cfg);
 		}
 		return functionData;
 	}

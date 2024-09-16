@@ -5,12 +5,14 @@ import CfgNodeKind from "#r/cfg/CfgNodeKind";
 import SymbolicExpression from "#r/symbolic/expressions/SymbolicExpression";
 
 export type ExecutionEntry = {
+	parentCalls: string,
 	cfgNode: CfgNode,
 	isSecondaryBranch: boolean,
 	branchingCondition: SymbolicExpression // Not negated even when it's secondary branch.
 };
 type ExecutionNode = {
 	parent: ExecutionNode | null,
+	parentCalls: string,
 	cfgNode: CfgNode,
 	isSecondaryBranch: boolean,
 	branchingCondition: SymbolicExpression,
@@ -21,7 +23,7 @@ type ExecutionNode = {
 const contextLengthLimit = 10;
 
 export default class BranchSelector {
-	#dominatorMap: Map<number, Set<number>>;
+	#dominatorMap: Map<number, Set<number>> = new Map<number, Set<number>>();
 	#executionTreeRoot: ExecutionNode;
 	#coveredContexts: Set<string> = new Set<string>();
 
@@ -30,7 +32,19 @@ export default class BranchSelector {
 	#currentNodes: ExecutionNode[] = [];
 	#nextNodes: ExecutionNode[] = [];
 
-	constructor(cfg: Cfg) {
+	constructor() {
+		this.#executionTreeRoot = {
+			parent: null,
+			parentCalls: "",
+			cfgNode: null!,
+			isSecondaryBranch: false,
+			branchingCondition: null!, // Won't be used.
+			isCovered: true,
+			children: [null, null]
+		};
+	}
+
+	addCfg(cfg: Cfg) {
 		const allNodes = [...iterateCfg(cfg)];
 		const allBranches: number[] = [];
 		const branchesToIterate: number[] = [];
@@ -82,16 +96,7 @@ export default class BranchSelector {
 				dominatorMap.set(branch, newDominatorSet);
 			}
 		}
-		this.#dominatorMap = dominatorMap;
-
-		this.#executionTreeRoot = {
-			parent: null,
-			cfgNode: cfg.beginNode,
-			isSecondaryBranch: false,
-			branchingCondition: null!, // Won't be used.
-			isCovered: true,
-			children: [null, null]
-		};
+		for (const [key, value] of dominatorMap) this.#dominatorMap.set(key, value);
 	}
 
 	getNextExecutionPath(): ExecutionEntry[] | null {
@@ -122,9 +127,12 @@ export default class BranchSelector {
 				let currentContextLength = 1;
 				let currentContextNode = currentNode.parent;
 				while (currentContextNode !== null && currentContextLength !== this.#contextLength) {
-					if (!dominators.has(
-						makeBranchKey(currentContextNode.cfgNode, currentContextNode.isSecondaryBranch)
-					)) {
+					if (currentContextNode !== this.#executionTreeRoot && (
+						currentContextNode.parentCalls !== currentNode.parentCalls
+						|| !dominators.has(makeBranchKey(
+							currentContextNode.cfgNode, currentContextNode.isSecondaryBranch
+						)
+					))) {
 						context += currentContextNode.cfgNode.id + " ";
 						++currentContextLength;
 					}
@@ -141,6 +149,7 @@ export default class BranchSelector {
 				currentPathNode !== this.#executionTreeRoot;
 				currentPathNode = currentPathNode.parent!
 			) executionPath.unshift({
+				parentCalls: currentPathNode.parentCalls,
 				cfgNode: currentPathNode.cfgNode,
 				isSecondaryBranch: currentPathNode.isSecondaryBranch,
 				branchingCondition: currentPathNode.branchingCondition
@@ -162,6 +171,7 @@ export default class BranchSelector {
 			}
 			const newNode: ExecutionNode = {
 				parent: currentTreeNode,
+				parentCalls: entry.parentCalls,
 				cfgNode: entry.cfgNode,
 				isSecondaryBranch: entry.isSecondaryBranch,
 				branchingCondition: entry.branchingCondition,

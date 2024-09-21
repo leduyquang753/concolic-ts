@@ -58,7 +58,7 @@ export default class Executor {
 	}
 
 	// Current limitation: must only be invoked once per instance.
-	async execute(): Promise<string[]> {
+	async execute(): Promise<string> {
 		for (const functionDeclaration of this.#sourceFile.getFunctions())
 			transformStatement(functionDeclaration.getBody()! as Ts.Statement, false);
 		await this.#sourceFile.getProject().save();
@@ -83,18 +83,16 @@ export default class Executor {
 				++parameterIndex;
 			}
 		}
-		const testDrivers = [];
+		const testCases: {params: string}[] = [];
 		let input: any | null = this.#generateInitialInput();
 		while (input !== null) {
 			console.log("Inputs: " + Object.entries(input).map(entry => `${entry[0]} = ${entry[1]}`).join("; "));
-			testDrivers.push(TemplateFile.render(
-				this.#testDriverTemplate, {params: this.#topLevelParameterNames.map(name => input[name]).join(", ")}
-			));
+			testCases.push({params: this.#topLevelParameterNames.map(name => input[name]).join(", ")});
 			this.#generateDriverScript(input);
 			input = await this.#executeFunctionAndGetNextInput();
 		}
 		console.log("Done.");
-		return testDrivers;
+		return TemplateFile.render(this.#testDriverTemplate, {testCases});
 	}
 
 	async #executeFunctionAndGetNextInput(): Promise<any | null> {

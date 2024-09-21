@@ -1,7 +1,10 @@
-import {Buffer} from "buffer";
 import * as ZipJs from "@zip.js/zip.js";
+import {Buffer} from "buffer";
+import * as ChildProcess from "child_process";
 import Fastify from "fastify";
+import * as FileSystem from "fs";
 import * as Path from "path";
+import {Shescape} from "shescape";
 import * as Ts from "ts-morph";
 
 import Executor from "#r/execution/Executor";
@@ -20,7 +23,11 @@ type FolderEntry = {
 };
 
 (async () => {
-const project = new Ts.Project({tsConfigFilePath: config.projectPath + "\\tsconfig.json"});
+// Ensure the concolic driver exists to prevent failure when resolving its compiled path.
+FileSystem.writeFileSync(Path.join(config.concolicProjectPath, "driver.ts"), "", "utf8");
+
+const shescape = new Shescape({shell: true});
+const project = new Ts.Project({tsConfigFilePath: config.concolicProjectPath + "\\tsconfig.json"});
 
 const server = Fastify();
 
@@ -52,7 +59,7 @@ server.post("/generate", {schema: {body: {
 	const params = request.body as {
 		filePath: string, functionName: string, concolicDriverTemplate: string, testDriverTemplate: string
 	};
-	const sourceFile = project.getSourceFile(config.projectPath + "/" + params.filePath);
+	const sourceFile = project.getSourceFile(Path.join(config.concolicProjectPath, params.filePath));
 	if (sourceFile === undefined) {
 		reply.statusCode = 404;
 		return {error: "Source file not found."};
@@ -62,20 +69,29 @@ server.post("/generate", {schema: {body: {
 		return {error: "Function not found."};
 	}
 	try {
-		const testDrivers = await new Executor(
-			config.projectPath, sourceFile, params.functionName,
-			params.concolicDriverTemplate, params.testDriverTemplate
-		).execute();
-		const zipFileWriter = new ZipJs.BlobWriter();
-		const zipWriter = new ZipJs.ZipWriter(zipFileWriter);
-		let i = 0;
-		for (const testDriver of testDrivers) {
-			++i;
-			await zipWriter.add(`test${i}.ts`, new ZipJs.TextReader(testDriver));
-		}
-		zipWriter.close();
-		reply.type("application/zip");
-		return Buffer.from(await (await zipFileWriter.getData()).arrayBuffer());
+		FileSystem.writeFileSync(
+			Path.join(config.testProjectPath, "concolic.spec.ts"),
+			await new Executor(
+				config.concolicProjectPath, sourceFile, params.functionName,
+				params.concolicDriverTemplate, params.testDriverTemplate
+			).execute(),
+			"utf8"
+		);
+		ChildProcess.spawnSync("npx", [
+			"vitest", "run", "concolic", "--root", shescape.quote(config.testProjectPath),
+			"--coverage", "--coverage.reporter", "json", "--coverage.reporter", "json-summary",
+			"--coverage.reportsDirectory", shescape.quote(Path.join(config.testProjectPath, "coverage"))
+		], {shell: true});
+		const testSourceFilePath = Path.join(config.testProjectPath, params.filePath);
+		return {
+			coverageSummary: JSON.parse(
+				FileSystem.readFileSync(Path.join(config.testProjectPath, "coverage/coverage-summary.json"), "utf8")
+			)[testSourceFilePath],
+			detailedCoverage: JSON.parse(
+				FileSystem.readFileSync(Path.join(config.testProjectPath, "coverage/coverage-final.json"), "utf8")
+			)[testSourceFilePath],
+			sourceCode: FileSystem.readFileSync(testSourceFilePath, "utf8")
+		};
 	} catch (e) {
 		console.error(e);
 		throw e;

@@ -69,14 +69,11 @@ server.post("/generate", {schema: {body: {
 		return {error: "Function not found."};
 	}
 	try {
-		FileSystem.writeFileSync(
-			Path.join(config.testProjectPath, "concolic.spec.ts"),
-			await new Executor(
-				config.concolicProjectPath, sourceFile, params.functionName,
-				params.concolicDriverTemplate, params.testDriverTemplate
-			).execute(),
-			"utf8"
-		);
+		const {testCases, testDriver} = await new Executor(
+			config.concolicProjectPath, project, params.filePath, params.functionName,
+			params.concolicDriverTemplate, params.testDriverTemplate
+		).execute();
+		FileSystem.writeFileSync(Path.join(config.testProjectPath, "concolic.spec.ts"), testDriver, "utf8");
 		ChildProcess.spawnSync("npx", [
 			"vitest", "run", "concolic", "--root", shescape.quote(config.testProjectPath),
 			"--coverage", "--coverage.reporter", "json", "--coverage.reporter", "json-summary",
@@ -84,6 +81,7 @@ server.post("/generate", {schema: {body: {
 		], {shell: true});
 		const testSourceFilePath = Path.join(config.testProjectPath, params.filePath);
 		return {
+			testCases,
 			coverageSummary: JSON.parse(
 				FileSystem.readFileSync(Path.join(config.testProjectPath, "coverage/coverage-summary.json"), "utf8")
 			)[testSourceFilePath],

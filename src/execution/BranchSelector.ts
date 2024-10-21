@@ -1,14 +1,24 @@
+import * as Ts from "ts-morph";
+
 import type {Cfg} from "#r/cfg/Cfg";
 import {iterateCfg} from "#r/cfg/Cfg";
 import type CfgNode from "#r/cfg/CfgNode";
 import CfgNodeKind from "#r/cfg/CfgNodeKind";
 import SymbolicExpression from "#r/symbolic/expressions/SymbolicExpression";
 
+import type {CacheNode, SolverResult} from "./SolverCache.js";
+import SolverCache from "./SolverCache.js";
+
 export type ExecutionEntry = {
 	parentCalls: string,
 	cfgNode: CfgNode,
 	isSecondaryBranch: boolean,
 	branchingCondition: SymbolicExpression // Not negated even when it's secondary branch.
+};
+export type ActualExecutionEntry = {
+	executionEntry: ExecutionEntry,
+	codeHash: number | null,
+	solverResult: SolverResult
 };
 type ExecutionNode = {
 	parent: ExecutionNode | null,
@@ -17,12 +27,17 @@ type ExecutionNode = {
 	isSecondaryBranch: boolean,
 	branchingCondition: SymbolicExpression,
 	isCovered: boolean,
-	children: (ExecutionNode | null)[] // Always has 2 elements corresponding to at most 2 branches.
+	children: (ExecutionNode | null)[], // Always has 2 elements corresponding to at most 2 branches.
+	cacheNode: CacheNode | null,
+	hasUpdatedCacheData: boolean
 };
 
 const contextLengthLimit = 10;
 
 export default class BranchSelector {
+	#solverCache: SolverCache;
+	#functionId: number;
+
 	#dominatorMap: Map<number, Set<number>> = new Map<number, Set<number>>();
 	#executionTreeRoot: ExecutionNode;
 	#coveredContexts: Set<string> = new Set<string>();
@@ -32,7 +47,10 @@ export default class BranchSelector {
 	#currentNodes: ExecutionNode[] = [];
 	#nextNodes: ExecutionNode[] = [];
 
-	constructor() {
+	constructor(solverCache: SolverCache, functionDeclaration: Ts.FunctionDeclaration) {
+		this.#solverCache = solverCache;
+		const {functionId, rootNode: rootCacheNode} = solverCache.getInfoForFunction(functionDeclaration);
+		this.#functionId = functionId;
 		this.#executionTreeRoot = {
 			parent: null,
 			parentCalls: "",
@@ -40,7 +58,9 @@ export default class BranchSelector {
 			isSecondaryBranch: false,
 			branchingCondition: null!, // Won't be used.
 			isCovered: true,
-			children: [null, null]
+			children: [null, null],
+			cacheNode: rootCacheNode,
+			hasUpdatedCacheData: false
 		};
 	}
 
@@ -99,7 +119,7 @@ export default class BranchSelector {
 		for (const [key, value] of dominatorMap) this.#dominatorMap.set(key, value);
 	}
 
-	getNextExecutionPath(): ExecutionEntry[] | null {
+	getNextExecutionPath(): {path: ExecutionEntry[], solverResult: SolverResult} | null {
 		while (true) {
 			if (this.#currentNodes.length === 0) {
 				++this.#currentSearchDepth;
@@ -141,7 +161,6 @@ export default class BranchSelector {
 			}
 			if (this.#coveredContexts.has(context)) continue;
 
-			currentNode.isCovered = true;
 			this.#coveredContexts.add(context);
 			const executionPath: ExecutionEntry[] = [];
 			for (
@@ -156,18 +175,64 @@ export default class BranchSelector {
 			});
 			const lastEntry = executionPath.at(-1)!;
 			lastEntry.isSecondaryBranch = !lastEntry.isSecondaryBranch;
-			return executionPath;
+
+			let solverResult: SolverResult = null;
+			if (!currentNode.hasUpdatedCacheData) {
+				const parent = currentNode.parent!;
+				const otherChildIndex = lastEntry.isSecondaryBranch ? 1 : 0;
+				const otherChild = parent.children[otherChildIndex];
+				if (otherChild === null) {
+					const cacheNodeId = parent.cacheNode!.children[otherChildIndex];
+					if (cacheNodeId !== null) solverResult = this.#solverCache.getNode(cacheNodeId).solverResult;
+				} else {
+					solverResult = otherChild.cacheNode!.solverResult;
+				}
+			}
+
+			return {path: executionPath, solverResult};
 		}
 	}
 
-	addExecutionPath(executionPath: ExecutionEntry[]): void {
+	addExecutionPath(executionPath: ActualExecutionEntry[]): void {
 		let currentTreeNode = this.#executionTreeRoot;
 		let depth = 0;
-		for (const entry of executionPath) {
-			const selectedChild = currentTreeNode.children[entry.isSecondaryBranch ? 1 : 0];
+		for (const {executionEntry: entry, codeHash, solverResult} of executionPath) {
+			const childIndex = entry.isSecondaryBranch ? 1 : 0;
+			const selectedChild = currentTreeNode.children[childIndex];
 			if (selectedChild !== null) {
 				currentTreeNode = selectedChild;
 				continue;
+			}
+			const currentCacheNode = currentTreeNode.cacheNode;
+			if (currentCacheNode === null) throw new Error("Cache node freed prematurely.");
+			let childCacheNode: CacheNode;
+			const childCacheNodeId = currentCacheNode.children[childIndex];
+			let childHasUpdatedCacheData = false;
+			if (childCacheNodeId === null) {
+				childCacheNode = {
+					id: -1,
+					codeHash: codeHash!,
+					solverResult,
+					children: [null, null]
+				};
+				childCacheNode.id = this.#solverCache.insertOrUpdateNode(this.#functionId, childCacheNode);
+				currentCacheNode.children[childIndex] = childCacheNode.id;
+				this.#solverCache.insertOrUpdateNode(this.#functionId, currentCacheNode);
+				childHasUpdatedCacheData = true;
+			} else {
+				childCacheNode = this.#solverCache.getNode(childCacheNodeId);
+				if (
+					currentTreeNode.hasUpdatedCacheData
+					|| (codeHash !== null && childCacheNode.codeHash !== codeHash)
+				) {
+					childCacheNode.codeHash = codeHash!;
+					childCacheNode.solverResult = solverResult;
+					this.#solverCache.insertOrUpdateNode(this.#functionId, childCacheNode);
+					childHasUpdatedCacheData = true;
+				} else if (childCacheNode.solverResult === null && solverResult !== null) {
+					childCacheNode.solverResult = structuredClone(solverResult);
+					this.#solverCache.insertOrUpdateNode(this.#functionId, childCacheNode);
+				}
 			}
 			const newNode: ExecutionNode = {
 				parent: currentTreeNode,
@@ -176,13 +241,16 @@ export default class BranchSelector {
 				isSecondaryBranch: entry.isSecondaryBranch,
 				branchingCondition: entry.branchingCondition,
 				isCovered: false,
-				children: [null, null]
+				children: [null, null],
+				cacheNode: childCacheNode,
+				hasUpdatedCacheData: childHasUpdatedCacheData
 			};
-			currentTreeNode.children[entry.isSecondaryBranch ? 1 : 0] = newNode;
+			currentTreeNode.children[childIndex] = newNode;
 			const otherChild = currentTreeNode.children[entry.isSecondaryBranch ? 0 : 1];
 			if (otherChild !== null) {
 				newNode.isCovered = true;
 				otherChild.isCovered = true;
+				currentTreeNode.cacheNode = null;
 			}
 			currentTreeNode = newNode;
 			if (depth === this.#currentSearchDepth) this.#currentNodes.push(newNode);

@@ -2,19 +2,22 @@
 	"type": "module",
 	"dependencies": {
 		"@zip.js/zip.js": "^2.7.52",
+		"better-sqlite3": "^11.3.0",
 		"fastify": "^5.0.0",
 		"shescape": "^2.1.1",
 		"source-map": "^0.7.4",
 		"template-file": "^6.0.1",
-		"ts-morph": "^23.0.0",
-		"vitest": "^2.1.1",
-		"ws": "^8.18.0"
+		"ts-morph": "^24.0.0",
+		"vitest": "^2.1.2",
+		"ws": "^8.18.0",
+		"js-xxhash": "^4.0.0"
 	},
 	"devDependencies": {
-		"@types/node": "^22.5.5",
+		"@types/better-sqlite3": "^7.6.11",
+		"@types/node": "^22.7.5",
 		"@types/ws": "^8.5.12",
-		"@vitest/coverage-v8": "^2.1.1",
-		"typescript": "^5.6.2"
+		"@vitest/coverage-v8": "^2.1.2",
+		"typescript": "^5.6.3"
 	},
 	"imports": {
 		"#r/*": "./dist/*.js"

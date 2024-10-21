@@ -1,6 +1,7 @@
 import * as ChildProcess from "child_process";
 import * as FileSystem from "fs";
 import * as Http from "http";
+import {xxHash32 as hash} from "js-xxhash";
 import * as Path from "path";
 import {SourceMapConsumer} from "source-map";
 import TemplateFile from "template-file";
@@ -19,12 +20,13 @@ import SymbolicExpressionKind from "#r/symbolic/expressions/SymbolicExpressionKi
 import UnarySymbolicExpression from "#r/symbolic/expressions/UnarySymbolicExpression";
 import VariableSymbolicExpression from "#r/symbolic/expressions/VariableSymbolicExpression";
 
-import type {ExecutionEntry} from "./BranchSelector.js";
+import type {ActualExecutionEntry, ExecutionEntry} from "./BranchSelector.js";
 import BranchSelector from "./BranchSelector.js";
 import type {Breakpoint} from "./Breakpoints.js";
 import {getBreakpointsFromCfg} from "./Breakpoints.js";
 import {transformStatement} from "./CodeTransformer.js";
 import DebuggerWebsocket from "./DebuggerWebsocket.js";
+import SolverCache from "./SolverCache.js";
 
 type FunctionData = {cfg: Cfg, breakpoints: Breakpoint[]};
 
@@ -43,7 +45,8 @@ export default class Executor {
 	#uncoveredCfgNodes!: Set<CfgNode>;
 	#halfCoveredCfgNodes: Map<CfgNode, boolean> = new Map<CfgNode, boolean>();
 	#currentExecutionPath: ExecutionEntry[] = [];
-	#branchSelector: BranchSelector = new BranchSelector();
+	#solverCache: SolverCache;
+	#branchSelector: BranchSelector;
 
 	constructor(
 		projectPath: string, project: Ts.Project, sourceFilePath: string, functionNameToTest: string,
@@ -59,6 +62,10 @@ export default class Executor {
 		this.#functionNameToTest = functionNameToTest;
 		this.#concolicDriverTemplate = concolicDriverTemplate;
 		this.#testDriverTemplate = testDriverTemplate;
+		this.#solverCache = new SolverCache(projectPath);
+		this.#branchSelector = new BranchSelector(
+			this.#solverCache, this.#sourceFile.getFunctionOrThrow(functionNameToTest)
+		);
 	}
 
 	// Current limitation: must only be invoked once per instance.
@@ -92,14 +99,14 @@ export default class Executor {
 		while (input !== null) {
 			console.log("Inputs: " + Object.entries(input).map(entry => `${entry[0]} = ${entry[1]}`).join("; "));
 			testCases.push(this.#topLevelParameterNames.map(name => ({name, value: input[name]})));
-			this.#generateDriverScript(input);
-			input = await this.#executeFunctionAndGetNextInput();
+			input = await this.#executeFunctionAndGetNextInput(input);
 		}
 		console.log("Done.");
 		const globalDriverVariables = {
 			sourceFilePath: this.#sourceFilePath.replace(/\.ts$/, ""),
 			functionName: this.#functionNameToTest
 		};
+		this.#solverCache.close();
 		return {
 			testCases,
 			testDriver: TemplateFile.render(this.#testDriverTemplate, {
@@ -111,7 +118,9 @@ export default class Executor {
 		};
 	}
 
-	async #executeFunctionAndGetNextInput(): Promise<any | null> {
+	async #executeFunctionAndGetNextInput(input: any): Promise<any | null> {
+		this.#generateDriverScript(input);
+
 		const sourceFilePath = this.#sourceFile.getFilePath();
 		const compiledFilePath = this.#getCompiledFilePath(sourceFilePath);
 
@@ -200,7 +209,8 @@ export default class Executor {
 		}[] = [];
 		const parentCallPathStack: string[] = [];
 		let parentCallPathString: string = "";
-		const newExecutionPath: ExecutionEntry[] = [];
+		const newExecutionPath: ActualExecutionEntry[] = [];
+		let currentCodeHash = 0;
 
 		mainExecutionLoop: while (true) {
 			if (currentCfgNode === cfg.endNode && parentCalls.length === 0) break;
@@ -241,6 +251,7 @@ export default class Executor {
 						continue mainExecutionLoop;
 					}
 				}
+				currentCodeHash = hash(currentCodeNode.getText(), currentCodeHash);
 				symbolicExecutor.executeNode(currentCodeNode);
 				if (currentCodeNode === currentCfgNode.tsNode!) break;
 				const next = getNextNodeToExecute(currentCodeNode);
@@ -275,10 +286,15 @@ export default class Executor {
 							) throw new Error("Actual code execution doesn't match what's predicted.");
 						}
 						newExecutionPath.push({
-							parentCalls: parentCallPathString,
-							cfgNode: currentCfgNode,
-							isSecondaryBranch: hitBreakpoint.isSecondaryBranch,
-							branchingCondition: getBranchingCondition(currentCfgNode, symbolicExecutor).trySimplify(true)
+							executionEntry: {
+								parentCalls: parentCallPathString,
+								cfgNode: currentCfgNode,
+								isSecondaryBranch: hitBreakpoint.isSecondaryBranch,
+								branchingCondition:
+									getBranchingCondition(currentCfgNode, symbolicExecutor).trySimplify(true)
+							},
+							codeHash: currentCodeHash,
+							solverResult: input
 						});
 						if (this.#uncoveredCfgNodes.has(currentCfgNode)) {
 							const coveredBranch = this.#halfCoveredCfgNodes.get(currentCfgNode);
@@ -301,47 +317,61 @@ export default class Executor {
 		}
 		websocket.close();
 		console.log("Finished execution.");
-		console.log("Branching series: " + newExecutionPath.map(e => e.isSecondaryBranch ? '0' : '1').join(" "));
-		if (this.#uncoveredCfgNodes.size === 0) return null;
+		console.log("Branching series: " + newExecutionPath.map(
+			e => e.executionEntry.isSecondaryBranch ? '0' : '1'
+		).join(" "));
 		this.#branchSelector.addExecutionPath(newExecutionPath);
+		if (this.#uncoveredCfgNodes.size === 0) return null;
 		while (true) {
-			const suggestedExecutionPath = this.#branchSelector.getNextExecutionPath();
-			if (suggestedExecutionPath === null) return null;
-			console.log("Generating constraints...");
-			const conditions = [];
-			for (const entry of suggestedExecutionPath) conditions.push(
-				entry.isSecondaryBranch
-				? new UnarySymbolicExpression("!", entry.branchingCondition.trySimplify(true))
-				: entry.branchingCondition
-			);
-			const usedParameters = new Set<string>();
-			for (const condition of conditions) collectUsedParametersFromCondition(condition, usedParameters);
-			let smtString = "(set-option :pp.decimal true)\n";
-			for (const parameter of usedParameters) smtString += `(declare-const ${parameter} Real)\n`;
-			for (const condition of conditions) smtString += `(assert ${condition.smtString})\n`;
-			smtString += "(check-sat-using qfnra-nlsat)\n(get-model)\n";
-			const smtFilePath = Path.join(this.#projectPath, "smt.txt");
-			FileSystem.writeFileSync(smtFilePath, smtString, "utf8");
-			console.log("Solving constraints...");
-			smtString = await new Promise(resolve => { ChildProcess.exec(
-				`"${config.pathToZ3}" "${smtFilePath}"`, {cwd: this.#projectPath},
-				(error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => {
-					resolve(stdout.toString());
-				}
-			); });
-			if (smtString.substring(0, 5) === "unsat") {
+			const pathResult = this.#branchSelector.getNextExecutionPath();
+			if (pathResult === null) return null;
+			const {path: suggestedExecutionPath, solverResult: cachedSolverResult} = pathResult;
+			if (cachedSolverResult === "infeasible") {
 				console.log("No input satisfies the constraints for the new path. Generating a new one.");
-				continue;
-			} else if (smtString.substring(0, 3) !== "sat") {
-				throw new Error("Failed to solve constraints.");
+			} else if (cachedSolverResult !== null) {
+				return cachedSolverResult;
+			} else {
+				console.log("Generating constraints...");
+				const conditions = [];
+				for (const entry of suggestedExecutionPath) conditions.push(
+					entry.isSecondaryBranch
+					? new UnarySymbolicExpression("!", entry.branchingCondition.trySimplify(true))
+					: entry.branchingCondition
+				);
+				const usedParameters = new Set<string>();
+				for (const condition of conditions) collectUsedParametersFromCondition(condition, usedParameters);
+				let smtString = "(set-option :pp.decimal true)\n";
+				for (const parameter of usedParameters) smtString += `(declare-const ${parameter} Real)\n`;
+				for (const condition of conditions) smtString += `(assert ${condition.smtString})\n`;
+				smtString += "(check-sat-using qfnra-nlsat)\n(get-model)\n";
+				const smtFilePath = Path.join(this.#projectPath, "smt.txt");
+				FileSystem.writeFileSync(smtFilePath, smtString, "utf8");
+				console.log("Solving constraints...");
+				smtString = await new Promise(resolve => { ChildProcess.exec(
+					`"${config.pathToZ3}" "${smtFilePath}"`, {cwd: this.#projectPath},
+					(error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => {
+						resolve(stdout.toString());
+					}
+				); });
+				if (smtString.substring(0, 5) === "unsat") {
+					const actualExecutionPath: ActualExecutionEntry[] = suggestedExecutionPath.map(
+						entry => ({executionEntry: entry, codeHash: null, solverResult: null})
+					);
+					actualExecutionPath[actualExecutionPath.length - 1].solverResult = "infeasible";
+					this.#branchSelector.addExecutionPath(actualExecutionPath);
+					console.log("No input satisfies the constraints for the new path. Generating a new one.");
+					continue;
+				} else if (smtString.substring(0, 3) !== "sat") {
+					throw new Error("Failed to solve constraints.");
+				}
+				this.#currentExecutionPath = suggestedExecutionPath;
+				const flatInputObject = Object.fromEntries([...smtString.matchAll(
+					/\(define-fun ([\w.@]+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
+				)].map(entry => [entry[1], Number(entry[2].replaceAll(" ", ""))]));
+				for (const parameterName of this.#parameterNames) if (!usedParameters.has(parameterName))
+					flatInputObject[parameterName] = Math.floor(Math.random() * 201) - 100;
+				return buildInputObject(flatInputObject);
 			}
-			this.#currentExecutionPath = suggestedExecutionPath;
-			const flatInputObject = Object.fromEntries([...smtString.matchAll(
-				/\(define-fun ([\w.@]+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
-			)].map(entry => [entry[1], Number(entry[2].replaceAll(" ", ""))]));
-			for (const parameterName of this.#parameterNames) if (!usedParameters.has(parameterName))
-				flatInputObject[parameterName] = Math.floor(Math.random() * 201) - 100;
-			return buildInputObject(flatInputObject);
 		}
 	}
 

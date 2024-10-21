@@ -26,6 +26,7 @@ import DebuggerWebsocket from "./DebuggerWebsocket";
 
 type FunctionData = {cfg: Cfg, breakpoints: Breakpoint[]};
 type BranchingRecord = {parentCalls: string, cfgNode: CfgNode, isSecondary: boolean};
+type Param = {name: string, type: string};
 
 export default class Executor {
 	#projectPath: string;
@@ -34,7 +35,7 @@ export default class Executor {
 	#functionDataMap: {[name: string]: FunctionData | undefined} = {};
 	#functionNameToTest: string;
 	#topLevelParameterNames: string[] = [];
-	#parameterNames: Set<string> = new Set<string>();
+	#parameterNames: Set<Param> = new Set();
 	#coveredCfgNodes: Set<string> = new Set<string>();
 	#currentBranchingSeries: BranchingRecord[] = [];
 
@@ -277,10 +278,19 @@ export default class Executor {
 				? new UnarySymbolicExpression("!", branchingConditions[i])
 				: branchingConditions[i]
 			);
-			const usedParameters = new Set<string>();
+			const usedParameters = new Set<Param>();
 			for (const condition of conditions) collectUsedParametersFromCondition(condition, usedParameters);
 			let smtString = "(set-option :pp.decimal true)\n";
-			for (const parameter of usedParameters) smtString += `(declare-const ${parameter} Real)\n`;
+			//for (const parameter of usedParameters) smtString += `(declare-const ${parameter} Real)\n`;
+			for (const parameter of usedParameters) {
+				if (parameter.type === "number") {
+					smtString += `(declare-const ${parameter.name} Real)\n`;
+				} else if (parameter.type === "boolean") {
+					smtString += `(declare-const ${parameter.name} Bool)\n`;
+				} else if (parameter.type === "string") {
+					smtString += `(declare-const ${parameter.name} String)\n`;
+				}
+			}
 			for (const condition of conditions) smtString += `(assert ${condition.smtString})\n`;
 			smtString += "(check-sat-using qfnra-nlsat)\n(get-model)\n";
 			const smtFilePath = Path.join(this.#projectPath, "smt.txt");
@@ -301,11 +311,35 @@ export default class Executor {
 				throw new Error("Failed to solve constraints.");
 			}
 			this.#currentBranchingSeries = newBranchingSeries;
-			const flatInputObject = Object.fromEntries([...smtString.matchAll(
-				/\(define-fun ([\w.@]+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
-			)].map(entry => [entry[1], Number(entry[2].replaceAll(" ", ""))]));
-			for (const parameterName of this.#parameterNames) if (!usedParameters.has(parameterName))
-				flatInputObject[parameterName] = Math.floor(Math.random() * 201) - 100;
+			// const flatInputObject = Object.fromEntries([...smtString.matchAll(
+			// 	/\(define-fun ([\w.@]+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
+			// )].map(entry => [entry[1], Number(entry[2].replaceAll(" ", ""))]));
+			const flatInputObject = Object.fromEntries(
+				[...smtString.matchAll(
+				  /\(define-fun ([\w.@]+) \(\) (Real|Bool|String)[^\d\(]+\(?((?:- )?[\d\.]+|true|false|\".*?\")\)?/g
+				)].map(entry => {
+					const [_, variableName, type, value] = entry;
+					let parsedValue;
+					if (type === 'Real') {
+						parsedValue = Number(value.replaceAll(" ", ""));
+					} else if (type === 'Bool') {
+						parsedValue = (value === 'true');
+				  	} else if (type === 'String') {
+						parsedValue = value.slice(1, -1);
+				  	}
+				  	return [variableName, parsedValue];
+				}));
+			for (const parameterName of this.#parameterNames) {
+				let isUsed = false;
+				for (const usedParam of usedParameters) {
+					if (usedParam.name === parameterName.name && usedParam.type === parameterName.type) {
+						isUsed = true;
+						break;
+					}
+				}
+				if (!isUsed) 
+					flatInputObject[parameterName.name] = this.#generateRandomValue(parameterName.type);
+			}
 			return buildInputObject(flatInputObject);
 		}
 	}
@@ -319,9 +353,30 @@ export default class Executor {
 	}
 
 	#generateInitialInput(): any {
-		return buildInputObject(Object.fromEntries([...this.#parameterNames].map(
-			parameterName => [parameterName, Math.floor(Math.random() * 201) - 100]
-		)));
+		return buildInputObject(
+			Object.fromEntries([...this.#parameterNames].map(
+				({ name, type }) => [name, this.#generateRandomValue(type)]
+			))
+		);
+	}
+	
+	#generateRandomValue(parameterType: string): any {
+		switch (parameterType) {
+			case 'number':
+				return Math.floor(Math.random() * 201) - 100;
+			case 'boolean':
+				return Math.random() < 1;
+			case 'string':
+				const length = Math.floor(Math.random() * 10) + 1;
+				const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+				let result = '';
+				for (let i = 0; i < length; i++) {
+					result += characters.charAt(Math.floor(Math.random() * characters.length));
+				}
+				return result;
+			default:
+				return null;
+		}
 	}
 
 	#getCompiledFilePath(sourceFilePath: string): string {
@@ -458,9 +513,12 @@ function getExpressionNode(tsNode: Ts.Node): Ts.Expression | null {
 	}
 }
 
-function collectParametersFromType(prefix: string, name: string, tsType: Ts.Type, parameterNames: Set<string>): void {
-	if (tsType.isNumber()) {
-		parameterNames.add(prefix + name);
+function collectParametersFromType(prefix: string, name: string, tsType: Ts.Type, parameterNames: Set<Param>): void {
+	if (tsType.isNumber() || tsType.isBoolean() || tsType.isString()) {
+		parameterNames.add({
+			name: prefix + name,
+			type: tsType.getText()
+		});
 	} else if (tsType.isObject()) {
 		for (const property of tsType.getProperties()) collectParametersFromType(
 			prefix + name + '.', property.getName(), property.getDeclarations()[0].getType(), parameterNames
@@ -470,15 +528,19 @@ function collectParametersFromType(prefix: string, name: string, tsType: Ts.Type
 	}
 }
 
-function collectUsedParametersFromCondition(condition: SymbolicExpression, usedParameters: Set<string>): void {
+function collectUsedParametersFromCondition(condition: SymbolicExpression, usedParameters: Set<Param>): void {
 	if (condition.kind === SymbolicExpressionKind.VARIABLE)
-		usedParameters.add((condition as VariableSymbolicExpression).symbolicName);
+		usedParameters.add({
+			name: (condition as VariableSymbolicExpression).symbolicName,
+			type: (condition as VariableSymbolicExpression).getType()
+		});
 	else
 		for (const child of condition.getChildExpressions()) collectUsedParametersFromCondition(child, usedParameters);
 }
 
 function buildInputObject(flatObject: any): any {
 	const inputObject: any = {};
+	console.log("flat obj", flatObject)
 	for (const [key, value] of Object.entries(flatObject)) {
 		const nameChain = key.split('.');
 		const terminalName = nameChain.pop()!;

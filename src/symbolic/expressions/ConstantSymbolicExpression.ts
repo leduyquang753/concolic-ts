@@ -13,6 +13,8 @@ export default class ConstantSymbolicExpression extends SymbolicExpression {
 		if (typeof this.value === "number") {
 			if (this.value < 0) return `(- ${formatNumber(-this.value)})`;
 			return formatNumber(this.value);
+		} else if (typeof this.value === "string") {
+			return `"${this.value.replace(/"/g, '\\"')}"`;
 		}
 		return this.value.toString();
 	}

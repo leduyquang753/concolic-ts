@@ -9,6 +9,7 @@ import SymbolicExpressionKind from "./expressions/SymbolicExpressionKind";
 import TernarySymbolicExpression from "./expressions/TernarySymbolicExpression";
 import UnarySymbolicExpression from "./expressions/UnarySymbolicExpression";
 import VariableSymbolicExpression from "./expressions/VariableSymbolicExpression";
+import VariableType from "./expressions/VariableType";
 
 type SymbolicVariable = {
 	scopeLevel: number,
@@ -53,12 +54,26 @@ export default class SymbolicExecutor {
 		let parameterIndex = 0;
 		for (const parameterDeclaration of functionDeclaration.getParameters()) {
 			const nameNode = parameterDeclaration.getNameNode();
-			const value = parameterDeclaration.getType().isObject()
-				? this.#generateObjectForParameter(
-					(Ts.Node.isIdentifier(nameNode) ? nameNode.getText() : `@${parameterIndex}`) + '.',
-					parameterDeclaration.getType()
-				)
-				: new VariableSymbolicExpression(parameterDeclaration.getName(), true);
+			const type = parameterDeclaration.getType();
+			let value;
+			switch (true) {
+				case type.isNumber():
+					value = new VariableSymbolicExpression(parameterDeclaration.getName(), true, VariableType.NUMBER);
+					break;
+				case type.isString():
+					value = new VariableSymbolicExpression(parameterDeclaration.getName(), true, VariableType.STRING);
+					break;
+				case type.isBoolean():
+					value = new VariableSymbolicExpression(parameterDeclaration.getName(), true, VariableType.BOOLEAN);
+					break;
+				case type.isObject():
+					value = this.#generateObjectForParameter(
+						(Ts.Node.isIdentifier(nameNode) ? nameNode.getText() : `@${parameterIndex}`) + '.',
+						parameterDeclaration.getType())
+					break;
+				default:
+					throw new Error(`Unsupported parameter declaration type \`${type.getText()}\`.`);
+			}
 			switch (nameNode.getKind()) {
 				case Ts.SyntaxKind.Identifier:
 					this.addVariable(nameNode.getText(), value);
@@ -195,6 +210,9 @@ export default class SymbolicExecutor {
 		switch (expression.getKind()) {
 			case Ts.SyntaxKind.NumericLiteral:
 				return new ConstantSymbolicExpression((expression as Ts.NumericLiteral).getLiteralValue());
+			case Ts.SyntaxKind.StringLiteral:
+				console.log(expression.getText())
+				return new ConstantSymbolicExpression((expression as Ts.StringLiteral).getLiteralValue());
 			case Ts.SyntaxKind.TrueKeyword:
 				return new ConstantSymbolicExpression(true);
 			case Ts.SyntaxKind.FalseKeyword:
@@ -318,9 +336,13 @@ export default class SymbolicExecutor {
 				object.value[property.getName()]
 					= this.#generateObjectForParameter(prefix + property.getName() + '.', subType);
 			} else if (subType.isNumber()) {
-				object.value[property.getName()] = new VariableSymbolicExpression(prefix + property.getName(), true);
+				object.value[property.getName()] = new VariableSymbolicExpression(prefix + property.getName(), true, VariableType.NUMBER);
+			} else if (subType.isString()) {
+				object.value[property.getName()] = new VariableSymbolicExpression(prefix + property.getName(), true, VariableType.STRING);
+			} else if (subType.isBoolean()) {
+				object.value[property.getName()] = new VariableSymbolicExpression(prefix + property.getName(), true, VariableType.BOOLEAN);
 			} else {
-				throw new Error("Non-number types are not yet supported.");
+				throw new Error("This type is not yet supported.");
 			}
 		}
 		return object;

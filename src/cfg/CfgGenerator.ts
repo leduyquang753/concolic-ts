@@ -1,8 +1,8 @@
 import * as Ts from "ts-morph";
 
+import CoverageKind from "#r/execution/CoverageKind";
 import symbolicBuiltinClasses from "#r/symbolic/builtins/SymbolicBuiltins";
 import type {Cfg} from "./Cfg.js";
-import {isEmptyCfg} from "./Cfg.js";
 import CfgNode from "./CfgNode.js";
 import CfgNodeKind from "./CfgNodeKind.js";
 
@@ -30,7 +30,6 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 			let lastCfgNode = cfg.beginNode;
 			for (const statement of (tsNode as Ts.Block).getStatements()) {
 				const subCfg = generateCfgFromNode(statement);
-				if (isEmptyCfg(subCfg)) continue;
 				lastCfgNode.primaryNext = subCfg.beginNode;
 				subCfg.escapeNode.primaryNext = cfg.escapeNode;
 				subCfg.continueNode.primaryNext = cfg.continueNode;
@@ -41,89 +40,73 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 			break;
 		}
 		case Ts.SyntaxKind.IfStatement: {
+			cfg.beginNode.primaryStatementCount = 1;
 			const ifTsNode = tsNode as Ts.IfStatement;
 			const conditionSubCfg = generateCfgFromNode(ifTsNode.getExpression());
 			cfg.beginNode.primaryNext = conditionSubCfg.beginNode;
 			const ifCfgNode = new CfgNode(CfgNodeKind.CONDITION, ifTsNode);
 			conditionSubCfg.endNode.primaryNext = ifCfgNode;
 			const thenSubCfg = generateCfgFromNode(ifTsNode.getThenStatement());
-			if (isEmptyCfg(thenSubCfg)) {
-				ifCfgNode.primaryNext = cfg.endNode;
-			} else {
-				ifCfgNode.primaryNext = thenSubCfg.beginNode;
-				thenSubCfg.endNode.primaryNext = cfg.endNode;
-				thenSubCfg.escapeNode.primaryNext = cfg.escapeNode;
-				thenSubCfg.continueNode.primaryNext = cfg.continueNode;
-				thenSubCfg.breakNode.primaryNext = cfg.breakNode;
-			}
+			ifCfgNode.primaryNext = thenSubCfg.beginNode;
+			thenSubCfg.endNode.primaryNext = cfg.endNode;
+			thenSubCfg.escapeNode.primaryNext = cfg.escapeNode;
+			thenSubCfg.continueNode.primaryNext = cfg.continueNode;
+			thenSubCfg.breakNode.primaryNext = cfg.breakNode;
 			const elseTsNode = ifTsNode.getElseStatement();
 			if (elseTsNode === undefined) {
 				ifCfgNode.secondaryNext = cfg.endNode;
 			} else {
 				const elseSubCfg = generateCfgFromNode(elseTsNode);
-				if (isEmptyCfg(elseSubCfg)) {
-					ifCfgNode.secondaryNext = cfg.endNode;
-				} else {
-					ifCfgNode.secondaryNext = elseSubCfg.beginNode;
-					elseSubCfg.endNode.primaryNext = cfg.endNode;
-					elseSubCfg.escapeNode.primaryNext = cfg.escapeNode;
-					elseSubCfg.continueNode.primaryNext = cfg.continueNode;
-					elseSubCfg.breakNode.primaryNext = cfg.breakNode;
-				}
+				ifCfgNode.secondaryNext = elseSubCfg.beginNode;
+				elseSubCfg.endNode.primaryNext = cfg.endNode;
+				elseSubCfg.escapeNode.primaryNext = cfg.escapeNode;
+				elseSubCfg.continueNode.primaryNext = cfg.continueNode;
+				elseSubCfg.breakNode.primaryNext = cfg.breakNode;
 			}
 			break;
 		}
 		case Ts.SyntaxKind.ForStatement:
 		case Ts.SyntaxKind.WhileStatement: {
+			cfg.beginNode.primaryStatementCount = 1;
 			const loopTsNode = tsNode as Ts.ForStatement | Ts.WhileStatement;
 			const loopCfgNode = new CfgNode(CfgNodeKind.CONDITION, loopTsNode);
 			cfg.beginNode.primaryNext = loopCfgNode;
 			loopCfgNode.secondaryNext = cfg.endNode;
 			const subCfg = generateCfgFromNode(loopTsNode.getStatement());
-			if (isEmptyCfg(subCfg)) {
-				loopCfgNode.primaryNext = loopCfgNode;
-			} else {
-				loopCfgNode.primaryNext = subCfg.beginNode;
-				subCfg.escapeNode.primaryNext = cfg.escapeNode;
-				subCfg.continueNode.primaryNext = loopCfgNode;
-				subCfg.breakNode.primaryNext = cfg.endNode;
-				subCfg.endNode.primaryNext = loopCfgNode;
-			}
+			loopCfgNode.primaryNext = subCfg.beginNode;
+			subCfg.escapeNode.primaryNext = cfg.escapeNode;
+			subCfg.continueNode.primaryNext = loopCfgNode;
+			subCfg.breakNode.primaryNext = cfg.endNode;
+			subCfg.endNode.primaryNext = loopCfgNode;
 			break;
 		}
 		case Ts.SyntaxKind.DoStatement: {
+			cfg.beginNode.primaryStatementCount = 1;
 			const doWhileTsNode = tsNode as Ts.DoStatement;
 			const doWhileConditionNode = new CfgNode(CfgNodeKind.CONDITION, doWhileTsNode);
 			const subCfg = generateCfgFromNode(doWhileTsNode.getStatement());
-			if (isEmptyCfg(subCfg)) {
-				cfg.beginNode.primaryNext = doWhileConditionNode;
-			} else {
-				cfg.beginNode.primaryNext = subCfg.beginNode;
-				subCfg.escapeNode.primaryNext = cfg.escapeNode;
-				subCfg.continueNode.primaryNext = doWhileConditionNode;
-				subCfg.breakNode.primaryNext = cfg.endNode;
-				subCfg.endNode.primaryNext = doWhileConditionNode;
-			}
+			cfg.beginNode.primaryNext = subCfg.beginNode;
+			subCfg.escapeNode.primaryNext = cfg.escapeNode;
+			subCfg.continueNode.primaryNext = doWhileConditionNode;
+			subCfg.breakNode.primaryNext = cfg.endNode;
+			subCfg.endNode.primaryNext = doWhileConditionNode;
 			doWhileConditionNode.primaryNext = cfg.beginNode.primaryNext;
 			doWhileConditionNode.secondaryNext = cfg.endNode;
 			break;
 		}
 		case Ts.SyntaxKind.ForInStatement:
 		case Ts.SyntaxKind.ForOfStatement: {
+			cfg.beginNode.primaryStatementCount = 1;
 			const forTsNode = tsNode as Ts.ForInStatement | Ts.ForOfStatement;
 			const forCfgNode = new CfgNode(CfgNodeKind.FOR_EACH, forTsNode);
 			cfg.beginNode.primaryNext = forCfgNode;
 			forCfgNode.secondaryNext = cfg.endNode;
 			const subCfg = generateCfgFromNode(forTsNode.getStatement());
-			if (isEmptyCfg(subCfg)) {
-				forCfgNode.primaryNext = cfg.endNode;
-			} else {
-				forCfgNode.primaryNext = subCfg.beginNode;
-				subCfg.escapeNode.primaryNext = cfg.escapeNode;
-				subCfg.continueNode.primaryNext = forCfgNode;
-				subCfg.breakNode.primaryNext = cfg.endNode;
-				subCfg.endNode.primaryNext = cfg.endNode;
-			}
+			forCfgNode.primaryNext = subCfg.beginNode;
+			subCfg.escapeNode.primaryNext = cfg.escapeNode;
+			subCfg.continueNode.primaryNext = forCfgNode;
+			subCfg.breakNode.primaryNext = cfg.endNode;
+			subCfg.endNode.primaryNext = cfg.endNode;
 			break;
 		}
 		case Ts.SyntaxKind.SwitchStatement: {
@@ -158,7 +141,6 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 			let lastCfgNode = cfg.beginNode;
 			for (const statement of caseTsNode.getStatements()) {
 				const subCfg = generateCfgFromNode(statement);
-				if (isEmptyCfg(subCfg)) continue;
 				lastCfgNode.primaryNext = subCfg.beginNode;
 				subCfg.escapeNode.primaryNext = cfg.escapeNode;
 				subCfg.continueNode.primaryNext = cfg.escapeNode;
@@ -168,31 +150,29 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 			lastCfgNode.primaryNext = cfg.endNode;
 			break;
 		case Ts.SyntaxKind.BreakStatement: {
+			cfg.beginNode.primaryStatementCount = 1;
 			cfg.beginNode.primaryNext = cfg.breakNode;
 			break;
 		}
 		case Ts.SyntaxKind.ReturnStatement: {
+			cfg.beginNode.primaryStatementCount = 1;
 			const expression = (tsNode as Ts.ReturnStatement).getExpression();
 			if (expression === undefined) {
 				cfg.beginNode.primaryNext = cfg.escapeNode;
 				break;
 			}
 			const expressionSubCfg = generateCfgFromNode(expression);
-			if (isEmptyCfg(expressionSubCfg)) {
-				cfg.beginNode.primaryNext = cfg.escapeNode;
-			} else {
-				cfg.beginNode.primaryNext = expressionSubCfg.beginNode;
-				expressionSubCfg.endNode.primaryNext = cfg.escapeNode;
-			}
+			cfg.beginNode.primaryNext = expressionSubCfg.beginNode;
+			expressionSubCfg.endNode.primaryNext = cfg.escapeNode;
 			break;
 		}
 		case Ts.SyntaxKind.VariableStatement: {
+			cfg.beginNode.primaryStatementCount = 1;
 			let lastCfgNode = cfg.beginNode;
 			for (const variableDeclaration of (tsNode as Ts.VariableStatement).getDeclarations()) {
 				const initializer = variableDeclaration.getInitializer();
 				if (initializer === undefined) continue;
 				const initializerSubCfg = generateCfgFromNode(initializer);
-				if (isEmptyCfg(initializerSubCfg)) continue;
 				lastCfgNode.primaryNext = initializerSubCfg.beginNode;
 				lastCfgNode = initializerSubCfg.endNode;
 			}
@@ -200,6 +180,7 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 			break;
 		}
 		case Ts.SyntaxKind.ExpressionStatement:
+			cfg.beginNode.primaryStatementCount = 1;
 			return generateCfgFromNode((tsNode as Ts.ExpressionStatement).getExpression());
 
 		// Expressions.
@@ -233,7 +214,6 @@ function generateCfgFromNode(tsNode: Ts.Node): Cfg {
 			let lastCfgNode = functionSubCfg.endNode;
 			for (const argument of callExpression.getArguments()) {
 				const argumentSubCfg = generateCfgFromNode(argument);
-				if (isEmptyCfg(argumentSubCfg)) continue;
 				lastCfgNode.primaryNext = argumentSubCfg.beginNode;
 				lastCfgNode = argumentSubCfg.endNode;
 			}

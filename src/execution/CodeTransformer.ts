@@ -1,4 +1,8 @@
+import * as FileSystem from "fs";
+import * as Path from "path";
 import * as Ts from "ts-morph";
+
+import CoverageKind from "./CoverageKind.js";
 
 type ExtractionResult = {precedingCode: string, newExpression: string};
 
@@ -13,13 +17,14 @@ function ensureCodeBlock(code: string, isStandalone: boolean): string {
 	return isStandalone ? `{\n${code}\n}\n` : code;
 }
 
-export function transformStatement(statement: Ts.Statement, isStandalone: boolean): void {
+export function transformStatement(statement: Ts.Statement, coverageKind: CoverageKind, isStandalone: boolean): void {
 	switch (statement.getKind()) {
 		case Ts.SyntaxKind.Block:
-			for (const subStatement of (statement as Ts.Block).getStatements()) transformStatement(subStatement, false);
+			for (const subStatement of (statement as Ts.Block).getStatements())
+				transformStatement(subStatement, coverageKind, false);
 			break;
 		case Ts.SyntaxKind.VariableStatement: {
-			const newCode = transformVariableDeclarationList(statement as Ts.VariableStatement);
+			const newCode = transformVariableDeclarationList(statement as Ts.VariableStatement, coverageKind);
 			if (newCode !== null) statement.replaceWithText(ensureCodeBlock(newCode, isStandalone));
 			break;
 		}
@@ -29,7 +34,7 @@ export function transformStatement(statement: Ts.Statement, isStandalone: boolea
 				!Ts.Node.isBinaryExpression(assignmentExpression)
 				|| assignmentExpression.getOperatorToken().getText() !== "="
 			) break;
-			const extractedCode = extractConditionalExpression(assignmentExpression.getRight());
+			const extractedCode = extractConditionalExpression(assignmentExpression.getRight(), coverageKind);
 			if (extractedCode === null) break;
 			statement.replaceWithText(ensureCodeBlock(
 				extractedCode.precedingCode
@@ -41,7 +46,7 @@ export function transformStatement(statement: Ts.Statement, isStandalone: boolea
 		case Ts.SyntaxKind.ReturnStatement: {
 			const returnExpression = (statement as Ts.ReturnStatement).getExpression();
 			if (returnExpression === undefined) break;
-			const extractedCode = extractConditionalExpression(returnExpression);
+			const extractedCode = extractConditionalExpression(returnExpression, coverageKind);
 			if (extractedCode === null) break;
 			statement.replaceWithText(ensureCodeBlock(
 				extractedCode.precedingCode + `return ${extractedCode.newExpression};`, isStandalone
@@ -51,10 +56,10 @@ export function transformStatement(statement: Ts.Statement, isStandalone: boolea
 		case Ts.SyntaxKind.IfStatement: {
 			const ifStatement = statement as Ts.IfStatement;
 			const thenStatement = ifStatement.getThenStatement();
-			transformStatement(thenStatement, true);
+			transformStatement(thenStatement, coverageKind, true);
 			const elseStatement = ifStatement.getElseStatement();
-			if (elseStatement !== undefined) transformStatement(elseStatement, true);
-			const extractedCondition = extractConditionalExpression(ifStatement.getExpression());
+			if (elseStatement !== undefined) transformStatement(elseStatement, coverageKind, true);
+			const extractedCondition = extractConditionalExpression(ifStatement.getExpression(), coverageKind);
 			if (extractedCondition === null) break;
 			ifStatement.replaceWithText(ensureCodeBlock(
 				extractedCondition.precedingCode
@@ -67,8 +72,8 @@ export function transformStatement(statement: Ts.Statement, isStandalone: boolea
 		case Ts.SyntaxKind.WhileStatement: {
 			const whileStatement = statement as Ts.WhileStatement;
 			const bodyStatement = whileStatement.getStatement();
-			transformStatement(bodyStatement, true);
-			const extractedCondition = extractConditionalExpression(whileStatement.getExpression());
+			transformStatement(bodyStatement, coverageKind, true);
+			const extractedCondition = extractConditionalExpression(whileStatement.getExpression(), coverageKind);
 			if (extractedCondition === null) break;
 			whileStatement.replaceWithText(
 				"while (true) {\n"
@@ -82,22 +87,24 @@ export function transformStatement(statement: Ts.Statement, isStandalone: boolea
 		case Ts.SyntaxKind.ForStatement: {
 			const forStatement = statement as Ts.ForStatement;
 			const bodyStatement = forStatement.getStatement();
-			transformStatement(bodyStatement, true);
+			transformStatement(bodyStatement, coverageKind, true);
 			const initializer = forStatement.getInitializer();
 			let extractedInitializer: string | null = null;
 			if (initializer !== undefined) {
 				if (Ts.Node.isExpression(initializer)) {
-					const extractionResult = extractConditionalExpression(initializer);
+					const extractionResult = extractConditionalExpression(initializer, coverageKind);
 					if (extractionResult !== null)
 						extractedInitializer = extractionResult.precedingCode + extractionResult.newExpression + ";";
 				} else {
-					extractedInitializer = transformVariableDeclarationList(initializer);
+					extractedInitializer = transformVariableDeclarationList(initializer, coverageKind);
 				}
 			}
 			const condition = forStatement.getCondition();
-			const extractedCondition = condition === undefined ? null : extractConditionalExpression(condition);
+			const extractedCondition
+				= condition === undefined ? null : extractConditionalExpression(condition, coverageKind);
 			const incrementor = forStatement.getIncrementor();
-			const extractedIncrementor = incrementor === undefined ? null : extractConditionalExpression(incrementor);
+			const extractedIncrementor
+				= incrementor === undefined ? null : extractConditionalExpression(incrementor, coverageKind);
 			if (extractedInitializer === null && extractedCondition === null && extractedIncrementor === null) break;
 			let newCode = "";
 			const shouldMakeOuterBlock = extractedInitializer !== null || extractedCondition !== null;
@@ -128,12 +135,12 @@ export function transformStatement(statement: Ts.Statement, isStandalone: boolea
 }
 
 function transformVariableDeclarationList(
-	variableDeclarationList: Ts.VariableDeclarationList | Ts.VariableStatement
+	variableDeclarationList: Ts.VariableDeclarationList | Ts.VariableStatement, coverageKind: CoverageKind
 ): string | null {
 	const declarations = variableDeclarationList.getDeclarations();
 	const extractedCodes = declarations.map(declaration => {
 		const initializer = declaration.getInitializer();
-		return initializer === undefined ? null : extractConditionalExpression(initializer);
+		return initializer === undefined ? null : extractConditionalExpression(initializer, coverageKind);
 	});
 	if (extractedCodes.every(code => code === null)) return null;
 	let declarationKeywords
@@ -165,11 +172,11 @@ function transformVariableDeclarationList(
 	return newCode;
 }
 
-function extractConditionalExpression(expression: Ts.Expression): ExtractionResult | null {
+function extractConditionalExpression(expression: Ts.Expression, coverageKind: CoverageKind): ExtractionResult | null {
 	switch (expression.getKind()) {
 		case Ts.SyntaxKind.ParenthesizedExpression: {
 			const parenthesizedExpression = expression as Ts.ParenthesizedExpression;
-			const extracted = extractConditionalExpression(parenthesizedExpression.getExpression());
+			const extracted = extractConditionalExpression(parenthesizedExpression.getExpression(), coverageKind);
 			return extracted === null ? null : {
 				precedingCode: extracted === null ? "" : extracted.precedingCode,
 				newExpression: (
@@ -181,7 +188,7 @@ function extractConditionalExpression(expression: Ts.Expression): ExtractionResu
 		}
 		case Ts.SyntaxKind.PrefixUnaryExpression: {
 			const unaryExpression = expression as Ts.PrefixUnaryExpression;
-			const extracted = extractConditionalExpression(unaryExpression.getOperand());
+			const extracted = extractConditionalExpression(unaryExpression.getOperand(), coverageKind);
 			return extracted === null ? null : {
 				precedingCode: extracted === null ? "" : extracted.precedingCode,
 				newExpression: (
@@ -192,7 +199,7 @@ function extractConditionalExpression(expression: Ts.Expression): ExtractionResu
 		}
 		case Ts.SyntaxKind.PostfixUnaryExpression: {
 			const unaryExpression = expression as Ts.PostfixUnaryExpression;
-			const extracted = extractConditionalExpression(unaryExpression.getOperand());
+			const extracted = extractConditionalExpression(unaryExpression.getOperand(), coverageKind);
 			return extracted === null ? null : {
 				precedingCode: extracted === null ? "" : extracted.precedingCode,
 				newExpression: (
@@ -203,52 +210,54 @@ function extractConditionalExpression(expression: Ts.Expression): ExtractionResu
 		}
 		case Ts.SyntaxKind.BinaryExpression: {
 			const binaryExpression = expression as Ts.BinaryExpression;
-			const extractedLeft = extractConditionalExpression(binaryExpression.getLeft());
-			const extractedRight = extractConditionalExpression(binaryExpression.getRight());
-			const operator = binaryExpression.getOperatorToken().getText();
-			if (operator === "&&") {
-				const generatedVariableName = generateVariableName();
-				return {
-					precedingCode: (
-						(extractedLeft === null ? "" : extractedLeft.precedingCode)
-						+ `let ${generatedVariableName}: ${binaryExpression.getType().getText()} = ${
-							extractedLeft === null
-							? binaryExpression.getLeft().getText() : extractedLeft.newExpression
-						};\n`
-						+ `if (${generatedVariableName}) {\n`
-						+ (extractedRight === null ? "" : extractedRight.precedingCode)
-						+ `${generatedVariableName} = ${
-							extractedRight === null
-							? binaryExpression.getRight().getText() : extractedRight.newExpression
-						};\n`
-						+ "} else {\n"
-						+ `${generatedVariableName} = ${generatedVariableName};\n`
-						+ "}\n"
-					),
-					newExpression: generatedVariableName
-				};
-			}
-			if (operator === "||") {
-				const generatedVariableName = generateVariableName();
-				return {
-					precedingCode: (
-						(extractedLeft === null ? "" : extractedLeft.precedingCode)
-						+ `let ${generatedVariableName}: ${binaryExpression.getType().getText()} = ${
-							extractedLeft === null
-							? binaryExpression.getLeft().getText() : extractedLeft.newExpression
-						};\n`
-						+ `if (${generatedVariableName}) {\n`
-						+ `${generatedVariableName} = ${generatedVariableName};\n`
-						+ "} else {\n"
-						+ (extractedRight === null ? "" : extractedRight.precedingCode)
-						+ `${generatedVariableName} = ${
-							extractedRight === null
-							? binaryExpression.getRight().getText() : extractedRight.newExpression
-						};\n`
-						+ "}\n"
-					),
-					newExpression: generatedVariableName
-				};
+			const extractedLeft = extractConditionalExpression(binaryExpression.getLeft(), coverageKind);
+			const extractedRight = extractConditionalExpression(binaryExpression.getRight(), coverageKind);
+			if (coverageKind === CoverageKind.PREDICATE) {
+				const operator = binaryExpression.getOperatorToken().getText();
+				if (operator === "&&") {
+					const generatedVariableName = generateVariableName();
+					return {
+						precedingCode: (
+							(extractedLeft === null ? "" : extractedLeft.precedingCode)
+							+ `let ${generatedVariableName}: ${binaryExpression.getType().getText()} = ${
+								extractedLeft === null
+								? binaryExpression.getLeft().getText() : extractedLeft.newExpression
+							};\n`
+							+ `if (${generatedVariableName}) {\n`
+							+ (extractedRight === null ? "" : extractedRight.precedingCode)
+							+ `${generatedVariableName} = ${
+								extractedRight === null
+								? binaryExpression.getRight().getText() : extractedRight.newExpression
+							};\n`
+							+ "} else {\n"
+							+ `${generatedVariableName} = ${generatedVariableName};\n`
+							+ "}\n"
+						),
+						newExpression: generatedVariableName
+					};
+				}
+				if (operator === "||") {
+					const generatedVariableName = generateVariableName();
+					return {
+						precedingCode: (
+							(extractedLeft === null ? "" : extractedLeft.precedingCode)
+							+ `let ${generatedVariableName}: ${binaryExpression.getType().getText()} = ${
+								extractedLeft === null
+								? binaryExpression.getLeft().getText() : extractedLeft.newExpression
+							};\n`
+							+ `if (${generatedVariableName}) {\n`
+							+ `${generatedVariableName} = ${generatedVariableName};\n`
+							+ "} else {\n"
+							+ (extractedRight === null ? "" : extractedRight.precedingCode)
+							+ `${generatedVariableName} = ${
+								extractedRight === null
+								? binaryExpression.getRight().getText() : extractedRight.newExpression
+							};\n`
+							+ "}\n"
+						),
+						newExpression: generatedVariableName
+					};
+				}
 			}
 			return extractedLeft === null && extractedRight === null ? null : {
 				precedingCode: (
@@ -264,9 +273,12 @@ function extractConditionalExpression(expression: Ts.Expression): ExtractionResu
 		}
 		case Ts.SyntaxKind.ConditionalExpression: {
 			const conditionalExpression = expression as Ts.ConditionalExpression;
-			const extractedCondition = extractConditionalExpression(conditionalExpression.getCondition());
-			const extractedTrueExpression = extractConditionalExpression(conditionalExpression.getWhenTrue());
-			const extractedFalseExpression = extractConditionalExpression(conditionalExpression.getWhenFalse());
+			const extractedCondition
+				= extractConditionalExpression(conditionalExpression.getCondition(), coverageKind);
+			const extractedTrueExpression
+				= extractConditionalExpression(conditionalExpression.getWhenTrue(), coverageKind);
+			const extractedFalseExpression
+				= extractConditionalExpression(conditionalExpression.getWhenFalse(), coverageKind);
 			const generatedVariableName = generateVariableName();
 			return {
 				precedingCode: (
@@ -296,7 +308,8 @@ function extractConditionalExpression(expression: Ts.Expression): ExtractionResu
 		}
 		case Ts.SyntaxKind.CallExpression: {
 			const callExpression = expression as Ts.CallExpression;
-			const extractedFunctionExpression = extractConditionalExpression(callExpression.getExpression());
+			const extractedFunctionExpression
+				= extractConditionalExpression(callExpression.getExpression(), coverageKind);
 			let precedingCode = extractedFunctionExpression === null ? "" : extractedFunctionExpression.precedingCode;
 			let newExpression = (extractedFunctionExpression === null
 				? callExpression.getExpression().getText()
@@ -307,7 +320,7 @@ function extractConditionalExpression(expression: Ts.Expression): ExtractionResu
 			for (const argument of callExpression.getArguments()) {
 				if (isFirstArgument) isFirstArgument = false;
 				else newExpression += ", ";
-				const extractedArgument = extractConditionalExpression(argument as Ts.Expression);
+				const extractedArgument = extractConditionalExpression(argument as Ts.Expression, coverageKind);
 				if (extractedArgument === null) {
 					newExpression += argument.getText();
 				} else {
@@ -345,7 +358,7 @@ function extractConditionalExpression(expression: Ts.Expression): ExtractionResu
 					newExpression += element.getText();
 					continue;
 				}
-				const transformedExpression = extractConditionalExpression(transformableExpression);
+				const transformedExpression = extractConditionalExpression(transformableExpression, coverageKind);
 				if (transformedExpression === null) {
 					newExpression += transformableExpression.getText();
 				} else {
@@ -359,4 +372,41 @@ function extractConditionalExpression(expression: Ts.Expression): ExtractionResu
 		}
 	}
 	return null;
+}
+
+export async function transformProject(
+	originalPath: string, destinationPath: string, coverageKind: CoverageKind
+): Promise<void> {
+	const isPredicateCoverage = coverageKind === CoverageKind.PREDICATE;
+	const transformationInfoFilePath = Path.join(destinationPath, "__concolic_transformed.json");
+	let shouldTransform = false;
+	if (FileSystem.existsSync(destinationPath)) {
+		if (FileSystem.existsSync(transformationInfoFilePath)) {
+			const transformationInfo = JSON.parse(FileSystem.readFileSync(transformationInfoFilePath, "utf8")) as {
+				transformedForPredicateCoverage: boolean, transformedFiles: string[]
+			};
+			if (isPredicateCoverage !== transformationInfo.transformedForPredicateCoverage) {
+				for (const filePath of transformationInfo.transformedFiles)
+					FileSystem.copyFileSync(Path.join(originalPath, filePath), Path.join(destinationPath, filePath));
+				shouldTransform = true;
+			}
+		} else {
+			shouldTransform = true;
+		}
+	} else {
+		FileSystem.cpSync(originalPath, destinationPath, {recursive: true});
+		shouldTransform = true;
+	}
+	if (shouldTransform) {
+		const project = new Ts.Project({tsConfigFilePath: Path.join(destinationPath, "tsconfig.json")});
+		for (const sourceFile of project.getSourceFiles()) {
+			for (const functionDeclaration of sourceFile.getFunctions())
+				transformStatement(functionDeclaration.getBody()! as Ts.Statement, coverageKind, false);
+		}
+		await project.save();
+		FileSystem.writeFileSync(transformationInfoFilePath, JSON.stringify({
+			transformedForPredicateCoverage: isPredicateCoverage,
+			transformedFiles: project.getSourceFiles().map(file => Path.relative(destinationPath, file.getFilePath()))
+		}), "utf8");
+	}
 }

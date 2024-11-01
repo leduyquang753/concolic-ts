@@ -20,9 +20,10 @@ type ExecutionNode = {
 	children: (ExecutionNode | null)[] // Always has 2 elements corresponding to at most 2 branches.
 };
 
-const contextLengthLimit = 10;
-
 export default class BranchSelector {
+	#maxSearchDepth: number;
+	#maxContextLength: number;
+
 	#dominatorMap: Map<number, Set<number>> = new Map<number, Set<number>>();
 	#executionTreeRoot: ExecutionNode;
 	#coveredContexts: Set<string> = new Set<string>();
@@ -32,7 +33,9 @@ export default class BranchSelector {
 	#currentNodes: ExecutionNode[] = [];
 	#nextNodes: ExecutionNode[] = [];
 
-	constructor() {
+	constructor(maxSearchDepth: number, maxContextLength: number) {
+		this.#maxSearchDepth = maxSearchDepth;
+		this.#maxContextLength = maxContextLength;
 		this.#executionTreeRoot = {
 			parent: null,
 			parentCalls: "",
@@ -105,8 +108,8 @@ export default class BranchSelector {
 				++this.#currentSearchDepth;
 				this.#currentNodes = this.#nextNodes;
 				this.#nextNodes = [];
-				if (this.#currentNodes.length === 0) {
-					if (this.#contextLength === contextLengthLimit) return null;
+				if (this.#currentNodes.length === 0 || this.#currentSearchDepth > this.#maxSearchDepth) {
+					if (this.#contextLength === this.#maxContextLength) return null;
 					++this.#contextLength;
 					this.#currentSearchDepth = 0;
 					this.#currentNodes = [this.#executionTreeRoot];

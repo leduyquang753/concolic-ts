@@ -34,19 +34,27 @@ export function compactCfg(cfg: Cfg): void {
 		if (visitedNodeIds.has(node.id)) continue;
 		visitedNodeIds.add(node.id);
 		if (node.primaryNext !== null) {
-			node.primaryNext = getNearestNonEphemeralNode(node.primaryNext);
+			const nearestInfo = getNearestNonEphemeralNode(node.primaryNext);
+			node.primaryNext = nearestInfo.node;
+			node.primaryStatementCount = nearestInfo.statementCount;
 			nodeStack.push(node.primaryNext);
 		}
 		if (node.secondaryNext !== null) {
-			node.secondaryNext = getNearestNonEphemeralNode(node.secondaryNext);
+			const nearestInfo = getNearestNonEphemeralNode(node.secondaryNext);
+			node.secondaryNext = nearestInfo.node;
+			node.secondaryStatementCount = nearestInfo.statementCount;
 			nodeStack.push(node.secondaryNext);
 		}
 	}
 }
 
-function getNearestNonEphemeralNode(node: CfgNode): CfgNode {
+function getNearestNonEphemeralNode(node: CfgNode): {node: CfgNode, statementCount: number} {
+	let statementCount = node.primaryStatementCount;
 	let currentNode = node;
-	while (isEphemeralCfgNodeKind(currentNode.kind) && currentNode.primaryNext !== null)
+	while (isEphemeralCfgNodeKind(currentNode.kind) && currentNode.primaryNext !== null) {
 		currentNode = currentNode.primaryNext;
-	return currentNode;
+		statementCount += currentNode.primaryStatementCount;
+	}
+	currentNode.primaryStatementCount = 0;
+	return {node: currentNode, statementCount};
 }

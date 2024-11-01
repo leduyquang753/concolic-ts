@@ -23,7 +23,7 @@ import type {ExecutionEntry} from "./BranchSelector.js";
 import BranchSelector from "./BranchSelector.js";
 import type {Breakpoint} from "./Breakpoints.js";
 import {getBreakpointsFromCfg} from "./Breakpoints.js";
-import {transformStatement} from "./CodeTransformer.js";
+import CoverageKind from "./CoverageKind.js";
 import DebuggerWebsocket from "./DebuggerWebsocket.js";
 
 type FunctionData = {cfg: Cfg, breakpoints: Breakpoint[]};
@@ -34,43 +34,59 @@ export default class Executor {
 	#projectConfiguration: Ts.ts.ParsedCommandLine;
 	#sourceFilePath: string;
 	#sourceFile: Ts.SourceFile;
+	#functionNameToTest: string;
 	#concolicDriverTemplate: string;
 	#testDriverTemplate: string;
+	#coverageKind: CoverageKind;
+	#coverageTarget: number;
+	#timeLimit: number;
+
 	#functionDataMap: {[name: string]: FunctionData | undefined} = {};
-	#functionNameToTest: string;
 	#topLevelParameterNames: string[] = [];
 	#parameterNames: Set<string> = new Set<string>();
-	#uncoveredCfgNodes!: Set<CfgNode>;
+	#coveredCfgNodes: Set<CfgNode> = new Set<CfgNode>();
 	#halfCoveredCfgNodes: Map<CfgNode, boolean> = new Map<CfgNode, boolean>();
 	#currentExecutionPath: ExecutionEntry[] = [];
-	#branchSelector: BranchSelector = new BranchSelector();
+	#branchSelector: BranchSelector;
+	#startTime: number = 0;
+	#coveredAmount: number = 0;
+	#totalCoverageAmount: number = 0;
 
 	constructor(
 		projectPath: string, project: Ts.Project, sourceFilePath: string, functionNameToTest: string,
-		concolicDriverTemplate: string, testDriverTemplate: string
+		concolicDriverTemplate: string, testDriverTemplate: string,
+		coverageKind: CoverageKind, coverageTarget: number, maxSearchDepth: number, maxContextLength: number,
+		timeLimit: number
 	) {
 		this.#projectPath = projectPath;
 		this.#project = project;
 		this.#projectConfiguration = Ts.ts.getParsedCommandLineOfConfigFile(
-			this.#projectPath + "\\tsconfig.json", undefined, Ts.ts.sys as any
+			Path.join(this.#projectPath, "tsconfig.json"), undefined, Ts.ts.sys as any
 		)!;
 		this.#sourceFilePath = sourceFilePath;
 		this.#sourceFile = project.getSourceFileOrThrow(sourceFilePath);
 		this.#functionNameToTest = functionNameToTest;
 		this.#concolicDriverTemplate = concolicDriverTemplate;
 		this.#testDriverTemplate = testDriverTemplate;
+		this.#coverageKind = coverageKind;
+		this.#coverageTarget = coverageTarget / 100;
+		this.#timeLimit = timeLimit * 1000;
+		this.#branchSelector = new BranchSelector(maxSearchDepth, maxContextLength);
 	}
 
 	// Current limitation: must only be invoked once per instance.
-	async execute(): Promise<{testCases: {name: string, value: string}[][], testDriver: string}> {
-		for (const functionDeclaration of this.#sourceFile.getFunctions())
-			transformStatement(functionDeclaration.getBody()! as Ts.Statement, false);
-		await this.#project.save();
+	async execute(): Promise<{
+		testCases: {name: string, value: string}[][], testDriver: string, coverage: number, time: number
+	}> {
 		const cfg = this.#getFunctionData(this.#functionNameToTest).cfg;
-		this.#uncoveredCfgNodes = new Set<CfgNode>([...iterateCfg(cfg)].filter(node =>node.isBranching && !(
-			node.tsNode!.getKind() === Ts.SyntaxKind.WhileStatement
-			&& (node.tsNode! as Ts.WhileStatement).getExpression().getKind() === Ts.SyntaxKind.TrueKeyword
-		)));
+		if (this.#coverageKind === CoverageKind.STATEMENT) {
+			for (const node of iterateCfg(cfg)) this.#totalCoverageAmount
+				+= node.primaryStatementCount
+				+ (isCfgNodeBranchable(node) ? node.secondaryStatementCount : 0);
+			this.#increaseCoveredAmount(cfg.beginNode, false);
+		} else {
+			for (const node of iterateCfg(cfg)) if (isCfgNodeBranchable(node)) this.#totalCoverageAmount += 2;
+		}
 		{
 			let parameterIndex = 0;
 			for (
@@ -87,6 +103,7 @@ export default class Executor {
 				++parameterIndex;
 			}
 		}
+		this.#startTime = new Date().getTime();
 		const testCases: {name: string, value: string}[][] = [];
 		let input: any | null = this.#generateInitialInput();
 		while (input !== null) {
@@ -107,7 +124,9 @@ export default class Executor {
 				testCases: testCases.map(
 					testCase => ({...globalDriverVariables, params: testCase.map(arg => arg.value).join(", ")})
 				)
-			})
+			}),
+			coverage: this.#coveredAmount / this.#totalCoverageAmount * 100,
+			time: (new Date().getTime() - this.#startTime) / 1000
 		};
 	}
 
@@ -205,6 +224,8 @@ export default class Executor {
 		mainExecutionLoop: while (true) {
 			if (currentCfgNode === cfg.endNode && parentCalls.length === 0) break;
 			while (currentCfgNode !== cfg.endNode && !currentCfgNode.isBranching) {
+				if (parentCalls.length === 0 && !this.#coveredCfgNodes.has(currentCfgNode))
+					this.#increaseCoveredAmount(currentCfgNode, false);
 				if (currentCfgNode.kind === CfgNodeKind.CALL) pendingCallCfgNodes.push(currentCfgNode);
 				const next = currentCfgNode.primaryNext;
 				if (next === null) throw new Error("Malformed CFG: a non-ending node connects to nowhere.");
@@ -278,15 +299,19 @@ export default class Executor {
 							parentCalls: parentCallPathString,
 							cfgNode: currentCfgNode,
 							isSecondaryBranch: hitBreakpoint.isSecondaryBranch,
-							branchingCondition: getBranchingCondition(currentCfgNode, symbolicExecutor).trySimplify(true)
+							branchingCondition: getBranchingCondition(currentCfgNode, symbolicExecutor)
 						});
-						if (this.#uncoveredCfgNodes.has(currentCfgNode)) {
-							const coveredBranch = this.#halfCoveredCfgNodes.get(currentCfgNode);
-							if (coveredBranch === undefined) {
-								this.#halfCoveredCfgNodes.set(currentCfgNode, hitBreakpoint.isSecondaryBranch);
-							} else if (coveredBranch !== hitBreakpoint.isSecondaryBranch) {
-								this.#uncoveredCfgNodes.delete(currentCfgNode);
-								this.#halfCoveredCfgNodes.delete(currentCfgNode);
+						if (parentCalls.length === 0 && !this.#coveredCfgNodes.has(currentCfgNode)) {
+							if (isCfgNodeBranchable(currentCfgNode)) {
+								const coveredBranch = this.#halfCoveredCfgNodes.get(currentCfgNode);
+								if (coveredBranch === undefined) {
+									this.#halfCoveredCfgNodes.set(currentCfgNode, hitBreakpoint.isSecondaryBranch);
+									this.#increaseCoveredAmount(currentCfgNode, hitBreakpoint.isSecondaryBranch);
+								} else if (coveredBranch !== hitBreakpoint.isSecondaryBranch) {
+									this.#coveredCfgNodes.add(currentCfgNode);
+									this.#halfCoveredCfgNodes.delete(currentCfgNode);
+									this.#increaseCoveredAmount(currentCfgNode, hitBreakpoint.isSecondaryBranch);
+								}
 							}
 						}
 						currentCfgNode = hitBreakpoint.isSecondaryBranch
@@ -302,7 +327,10 @@ export default class Executor {
 		websocket.close();
 		console.log("Finished execution.");
 		console.log("Branching series: " + newExecutionPath.map(e => e.isSecondaryBranch ? '0' : '1').join(" "));
-		if (this.#uncoveredCfgNodes.size === 0) return null;
+		if (
+			this.#coveredAmount / this.#totalCoverageAmount >= this.#coverageTarget
+			|| new Date().getTime() - this.#startTime > this.#timeLimit
+		) return null;
 		this.#branchSelector.addExecutionPath(newExecutionPath);
 		while (true) {
 			const suggestedExecutionPath = this.#branchSelector.getNextExecutionPath();
@@ -311,7 +339,7 @@ export default class Executor {
 			const conditions = [];
 			for (const entry of suggestedExecutionPath) conditions.push(
 				entry.isSecondaryBranch
-				? new UnarySymbolicExpression("!", entry.branchingCondition.trySimplify(true))
+				? new UnarySymbolicExpression("!", entry.branchingCondition).trySimplify(true)
 				: entry.branchingCondition
 			);
 			const usedParameters = new Set<string>();
@@ -343,6 +371,12 @@ export default class Executor {
 				flatInputObject[parameterName] = Math.floor(Math.random() * 201) - 100;
 			return buildInputObject(flatInputObject);
 		}
+	}
+
+	#increaseCoveredAmount(cfgNode: CfgNode, isSecondaryBranch: boolean): void {
+		this.#coveredAmount += this.#coverageKind === CoverageKind.STATEMENT
+			? isSecondaryBranch ? cfgNode.secondaryStatementCount : cfgNode.primaryStatementCount
+			: 1;
 	}
 
 	#generateDriverScript(input: any): void {
@@ -478,6 +512,13 @@ function getNextNodeToExecute(tsNode: Ts.Node): Ts.Node | null {
 		}
 	}
 	return candidate;
+}
+
+function isCfgNodeBranchable(cfgNode: CfgNode): boolean {
+	return cfgNode.isBranching && !(
+		cfgNode.tsNode!.getKind() === Ts.SyntaxKind.WhileStatement
+		&& (cfgNode.tsNode! as Ts.WhileStatement).getExpression().getKind() === Ts.SyntaxKind.TrueKeyword
+	);
 }
 
 function getBranchingCondition(cfgNode: CfgNode, symbolicExecutor: SymbolicExecutor): SymbolicExpression {

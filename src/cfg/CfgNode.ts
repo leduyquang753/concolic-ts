@@ -11,6 +11,8 @@ export default class CfgNode {
 
 	primaryNext: CfgNode | null = null;
 	secondaryNext: CfgNode | null = null;
+	primaryStatementCount: number = 0;
+	secondaryStatementCount: number = 0;
 
 	constructor(kind: CfgNodeKind, tsNode: Node | null = null) {
 		this.id = CfgNode.#nextId;

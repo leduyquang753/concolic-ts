@@ -75,7 +75,7 @@ export default class Executor {
 	}
 
 	// Current limitation: must only be invoked once per instance.
-	async execute(): Promise<{
+	async execute(progressCallback: (testCount: number, coverage: number) => void): Promise<{
 		testCases: {name: string, value: string}[][], testDriver: string, coverage: number, time: number
 	}> {
 		const cfg = this.#getFunctionData(this.#functionNameToTest).cfg;
@@ -107,6 +107,7 @@ export default class Executor {
 		const testCases: {name: string, value: string}[][] = [];
 		let input: any | null = this.#generateInitialInput();
 		while (input !== null) {
+			progressCallback(testCases.length, this.#coveredAmount / this.#totalCoverageAmount);
 			console.log("Inputs: " + Object.entries(input).map(entry => `${entry[0]} = ${entry[1]}`).join("; "));
 			testCases.push(this.#topLevelParameterNames.map(name => ({name, value: input[name]})));
 			this.#generateDriverScript(input);

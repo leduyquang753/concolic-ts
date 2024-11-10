@@ -109,9 +109,12 @@ export default class Executor {
 		while (input !== null) {
 			progressCallback(testCases.length, this.#coveredAmount / this.#totalCoverageAmount);
 			console.log("Inputs: " + Object.entries(input).map(entry => `${entry[0]} = ${entry[1]}`).join("; "));
-			testCases.push(this.#topLevelParameterNames.map(name => ({name, value: input[name]})));
 			this.#generateDriverScript(input);
-			input = await this.#executeFunctionAndGetNextInput();
+			const oldCoveredAmount = this.#coveredAmount;
+			const newInput = await this.#executeFunctionAndGetNextInput();
+			if (this.#coveredAmount !== oldCoveredAmount)
+				testCases.push(this.#topLevelParameterNames.map(name => ({name, value: input[name]})));
+			input = newInput;
 		}
 		console.log("Done.");
 		const globalDriverVariables = {
@@ -225,8 +228,10 @@ export default class Executor {
 		mainExecutionLoop: while (true) {
 			if (currentCfgNode === cfg.endNode && parentCalls.length === 0) break;
 			while (currentCfgNode !== cfg.endNode && !currentCfgNode.isBranching) {
-				if (parentCalls.length === 0 && !this.#coveredCfgNodes.has(currentCfgNode))
+				if (parentCalls.length === 0 && !this.#coveredCfgNodes.has(currentCfgNode)) {
 					this.#increaseCoveredAmount(currentCfgNode, false);
+					this.#coveredCfgNodes.add(currentCfgNode);
+				}
 				if (currentCfgNode.kind === CfgNodeKind.CALL) pendingCallCfgNodes.push(currentCfgNode);
 				const next = currentCfgNode.primaryNext;
 				if (next === null) throw new Error("Malformed CFG: a non-ending node connects to nowhere.");
@@ -377,7 +382,7 @@ export default class Executor {
 	#increaseCoveredAmount(cfgNode: CfgNode, isSecondaryBranch: boolean): void {
 		this.#coveredAmount += this.#coverageKind === CoverageKind.STATEMENT
 			? isSecondaryBranch ? cfgNode.secondaryStatementCount : cfgNode.primaryStatementCount
-			: 1;
+			: isCfgNodeBranchable(cfgNode) ? 1 : 0;
 	}
 
 	#generateDriverScript(input: any): void {

@@ -87,6 +87,7 @@ server.post("/projects", {schema: {consumes: ["multipart/form-data"], body: {
 		projectPath = Path.join(config.storagePath, projectId);
 		if (!FileSystem.existsSync(projectPath)) break;
 	}
+	FileSystem.mkdirSync(projectPath);
 	FileSystem.writeFileSync(
 		Path.join(projectPath, "info.json"),
 		JSON.stringify({id: projectId, name: params.name}),
@@ -102,11 +103,11 @@ server.post("/projects", {schema: {consumes: ["multipart/form-data"], body: {
 	FileSystem.mkdirSync(originalPath, {recursive: true});
 	const zipReader = new ZipJs.ZipReader(new ZipJs.BlobReader(new Blob([params.contents])));
 	for (const entry of await zipReader.getEntries()) {
+		if (entry.filename.match(/^node_modules(?:\/|$)/) !== null) continue;
 		const entryPath = Path.join(originalPath, entry.filename);
 		if (entry.directory) FileSystem.mkdirSync(entryPath);
 		else FileSystem.writeFileSync(entryPath, await entry.getData!(new ZipJs.Uint8ArrayWriter()));
 	}
-	FileSystem.rmSync(Path.join(projectPath, "original/node_modules"), {recursive: true, force: true});
 
 	statusStore.updateTaskProgress("Setting up project...");
 	const concolicPath = Path.join(projectPath, "concolic");
@@ -332,6 +333,30 @@ server.get("/projects/:id/coverage/*", {schema: {params: projectIdSchema}}, (req
 		return;
 	}
 	reply.sendFile(projectId + '/test/coverage/lcov-report/' + (request.params as {"*": string})["*"]);
+});
+server.get("/projects/:id/tests", {schema: {params: projectIdSchema}}, async (request, reply) => {
+	const projectPath = Path.join(config.storagePath, (request.params as {id: string}).id);
+	if (!FileSystem.existsSync(projectPath)) {
+		reply.statusCode = 404;
+		return {error: "Project not found."};
+	}
+	const resultPath = Path.join(projectPath, "generationResult.json");
+	if (
+		!FileSystem.existsSync(resultPath)
+		|| (JSON.parse(FileSystem.readFileSync(resultPath, "utf8")) as {status: string}).status !== "succeeded"
+	) {
+		reply.statusCode = 404;
+		return {error: "No generation results."};
+	}
+	const testPath = Path.join(projectPath, "test");
+	const blobWriter = new ZipJs.BlobWriter();
+	const zipWriter = new ZipJs.ZipWriter(blobWriter);
+	for (const name of FileSystem.readdirSync(testPath).filter(
+		name => name.match(/^concolic\d+\.spec\.ts$/) !== null
+	)) await zipWriter.add(name, new ZipJs.TextReader(FileSystem.readFileSync(Path.join(testPath, name), "utf8")));
+	await zipWriter.close();
+	reply.type("application/zip");
+	return Buffer.from(await (await blobWriter.getData()).arrayBuffer());
 });
 server.get("/projects/:id/last-generation-params", {schema: {params: projectIdSchema}}, (request, reply) => {
 	const projectPath = Path.join(config.storagePath, (request.params as {id: string}).id);

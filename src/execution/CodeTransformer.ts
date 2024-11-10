@@ -399,14 +399,18 @@ export async function transformProject(
 	}
 	if (shouldTransform) {
 		const project = new Ts.Project({tsConfigFilePath: Path.join(destinationPath, "tsconfig.json")});
+		const transformedFiles: string[] = [];
 		for (const sourceFile of project.getSourceFiles()) {
+			if (Path.basename(sourceFile.getFilePath()).startsWith("__concolic")) continue;
 			for (const functionDeclaration of sourceFile.getFunctions())
 				transformStatement(functionDeclaration.getBody()! as Ts.Statement, coverageKind, false);
+			transformedFiles.push(sourceFile.getFilePath());
 		}
 		await project.save();
-		FileSystem.writeFileSync(transformationInfoFilePath, JSON.stringify({
-			transformedForPredicateCoverage: isPredicateCoverage,
-			transformedFiles: project.getSourceFiles().map(file => Path.relative(destinationPath, file.getFilePath()))
-		}), "utf8");
+		FileSystem.writeFileSync(
+			transformationInfoFilePath,
+			JSON.stringify({transformedForPredicateCoverage: isPredicateCoverage, transformedFiles}),
+			"utf8"
+		);
 	}
 }

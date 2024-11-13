@@ -1,7 +1,14 @@
 import * as Ts from "ts-morph";
 
 export function getTestableFunctions(sourceFile: Ts.SourceFile): Ts.FunctionDeclaration[] {
-	return sourceFile.getFunctions().filter(isValidFunction);
+	return sourceFile.getFunctions().filter(functionDeclaration => {
+		if (!functionDeclaration.isExported()) return false;
+		if (
+			functionDeclaration.getParameters().length !== 0
+			&& !functionDeclaration.getParameters().every(parameter => isValidType(parameter.getType()))
+		) return false;
+		return isValidType(functionDeclaration.getReturnType());
+	});
 }
 
 function isPrimitiveType(type: Ts.Type): boolean {
@@ -24,12 +31,4 @@ function isValidType(type: Ts.Type): boolean {
 		}
 	);
 	return false;
-}
-
-function isValidFunction(functionDeclaration: Ts.FunctionDeclaration): boolean {
-	if (
-		functionDeclaration.getParameters().length !== 0
-		&& !functionDeclaration.getParameters().every(parameter => isValidType(parameter.getType()))
-	) return false;
-	return isValidType(functionDeclaration.getReturnType());
 }

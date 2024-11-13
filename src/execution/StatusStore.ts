@@ -32,6 +32,7 @@ export default class StatusStore {
 		}
 		this.#listeners = [];
 		this.#currentTask = null;
+		console.log("Task done.");
 	}
 
 	get hasRunningTask(): boolean {

@@ -98,8 +98,11 @@ server.post("/projects", {schema: {consumes: ["multipart/form-data"], body: {
 
 	(async () => { // Task body.
 
-	statusStore.updateTaskProgress("Extracting files...");
 	const originalPath = Path.join(projectPath, "original");
+	const concolicPath = Path.join(projectPath, "concolic");
+	const testPath = Path.join(projectPath, "test");
+
+	statusStore.updateTaskProgress("Extracting files...");
 	FileSystem.mkdirSync(originalPath, {recursive: true});
 	const zipReader = new ZipJs.ZipReader(new ZipJs.BlobReader(new Blob([params.contents])));
 	for (const entry of await zipReader.getEntries()) {
@@ -110,16 +113,14 @@ server.post("/projects", {schema: {consumes: ["multipart/form-data"], body: {
 	}
 
 	statusStore.updateTaskProgress("Setting up project...");
-	const concolicPath = Path.join(projectPath, "concolic");
-	FileSystem.cpSync(Path.join(projectPath, "original"), concolicPath, {recursive: true});
-	ChildProcess.spawnSync("npm", ["ci"], {cwd: concolicPath, shell: true, stdio: "ignore"});
-	ChildProcess.spawnSync(
-		"npm", ["install", "@vitest/coverage-v8"], {cwd: concolicPath, shell: true, stdio: "ignore"}
-	);
-
-	const testPath = Path.join(projectPath, "test");
+	FileSystem.cpSync(originalPath, concolicPath, {recursive: true});
 	FileSystem.cpSync(originalPath, testPath, {recursive: true});
-	FileSystem.symlinkSync(Path.join(concolicPath, "node_modules"), Path.join(testPath, "node_modules"));
+	ChildProcess.spawnSync("npm", ["ci"], {cwd: originalPath, shell: true, stdio: "ignore"});
+	ChildProcess.spawnSync(
+		"npm", ["install", "@vitest/coverage-v8"], {cwd: originalPath, shell: true, stdio: "ignore"}
+	);
+	FileSystem.symlinkSync(Path.join(originalPath, "node_modules"), Path.join(concolicPath, "node_modules"));
+	FileSystem.symlinkSync(Path.join(originalPath, "node_modules"), Path.join(testPath, "node_modules"));
 	statusStore.finishTask();
 
 	})(); // Task body.
@@ -165,7 +166,7 @@ server.get("/projects/:id/functions", {schema: {params: projectIdSchema}}, async
 		reply.statusCode = 404;
 		return {error: "Project not found."};
 	}
-	const project = new Ts.Project({tsConfigFilePath: Path.join(projectPath, "concolic/tsconfig.json")});
+	const project = new Ts.Project({tsConfigFilePath: Path.join(projectPath, "original/tsconfig.json")});
 	return {kind: "directory", name: "[Root]", entries: project.getDirectories().map(getFolderEntry)};
 });
 

@@ -53,7 +53,8 @@ export default class SymbolicExecutor {
 		let parameterIndex = 0;
 		for (const parameterDeclaration of functionDeclaration.getParameters()) {
 			const nameNode = parameterDeclaration.getNameNode();
-			const value = parameterDeclaration.getType().isObject()
+			const type = parameterDeclaration.getType();
+			const value = type.isObject() || type.isInterface()
 				? this.#generateObjectForParameter(
 					(Ts.Node.isIdentifier(nameNode) ? nameNode.getText() : `@${parameterIndex}`) + '.',
 					parameterDeclaration.getType()

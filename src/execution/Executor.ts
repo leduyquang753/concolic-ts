@@ -554,7 +554,7 @@ function getExpressionNode(tsNode: Ts.Node): Ts.Expression | null {
 function collectParametersFromType(prefix: string, name: string, tsType: Ts.Type, parameterNames: Set<string>): void {
 	if (tsType.isNumber()) {
 		parameterNames.add(prefix + name);
-	} else if (tsType.isObject()) {
+	} else if (tsType.isObject() || tsType.isInterface()) {
 		for (const property of tsType.getProperties()) collectParametersFromType(
 			prefix + name + '.', property.getName(), property.getDeclarations()[0].getType(), parameterNames
 		);

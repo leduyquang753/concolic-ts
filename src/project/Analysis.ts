@@ -16,17 +16,20 @@ function isPrimitiveType(type: Ts.Type): boolean {
 
 function isValidType(type: Ts.Type): boolean {
 	if (isPrimitiveType(type)) return true;
-	if (type.isArray()) return isValidType(type.getArrayElementType() as Ts.Type);
-	if (!type.isObject()) return false;
-	for (const prop of type.getProperties())
-		if (!isValidType(prop.getTypeAtLocation(prop.getDeclarations()[0]))) return false;
-	return true;
+	//if (type.isArray()) return isValidType(type.getArrayElementType() as Ts.Type);
+	if (type.isObject() || type.isInterface()) return type.getProperties().every(
+		property => {
+			console.log(property.getName());
+			return isValidType(property.getTypeAtLocation(property.getDeclarations()[0]));
+		}
+	);
+	return false;
 }
 
 function isValidFunction(functionDeclaration: Ts.FunctionDeclaration): boolean {
-	if (functionDeclaration.getParameters().length > 0) {
-		for (const parameter of functionDeclaration.getParameters())
-			if (!isValidType(parameter.getType())) return false;
-	}
+	if (
+		functionDeclaration.getParameters().length !== 0
+		&& !functionDeclaration.getParameters().every(parameter => isValidType(parameter.getType()))
+	) return false;
 	return isValidType(functionDeclaration.getReturnType());
 }

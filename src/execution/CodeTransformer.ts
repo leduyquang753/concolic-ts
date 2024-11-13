@@ -404,7 +404,7 @@ export async function transformProject(
 			if (Path.basename(sourceFile.getFilePath()).startsWith("__concolic")) continue;
 			for (const functionDeclaration of sourceFile.getFunctions())
 				transformStatement(functionDeclaration.getBody()! as Ts.Statement, coverageKind, false);
-			transformedFiles.push(sourceFile.getFilePath());
+			transformedFiles.push(Path.relative(destinationPath, sourceFile.getFilePath()));
 		}
 		await project.save();
 		FileSystem.writeFileSync(

@@ -48,6 +48,9 @@ export default class Executor {
 	#solverCache: SolverCache;
 	#branchSelector: BranchSelector;
 
+	#solverCalls: number = 0;
+	#cachedSolverResults: number = 0;
+
 	constructor(
 		projectPath: string, project: Ts.Project, sourceFilePath: string, functionNameToTest: string,
 		concolicDriverTemplate: string, testDriverTemplate: string
@@ -69,7 +72,10 @@ export default class Executor {
 	}
 
 	// Current limitation: must only be invoked once per instance.
-	async execute(): Promise<{testCases: {name: string, value: string}[][], testDriver: string}> {
+	async execute(): Promise<{
+		testCases: {name: string, value: string}[][], testDriver: string,
+		solverCalls: number, cachedSolverResults: number
+	}> {
 		for (const functionDeclaration of this.#sourceFile.getFunctions())
 			transformStatement(functionDeclaration.getBody()! as Ts.Statement, false);
 		await this.#project.save();
@@ -114,7 +120,9 @@ export default class Executor {
 				testCases: testCases.map(
 					testCase => ({...globalDriverVariables, params: testCase.map(arg => arg.value).join(", ")})
 				)
-			})
+			}),
+			solverCalls: this.#solverCalls,
+			cachedSolverResults: this.#cachedSolverResults
 		};
 	}
 
@@ -328,9 +336,12 @@ export default class Executor {
 			const {path: suggestedExecutionPath, solverResult: cachedSolverResult} = pathResult;
 			if (cachedSolverResult === "infeasible") {
 				console.log("No input satisfies the constraints for the new path. Generating a new one.");
+				++this.#cachedSolverResults;
 			} else if (cachedSolverResult !== null) {
+				++this.#cachedSolverResults;
 				return cachedSolverResult;
 			} else {
+				++this.#solverCalls;
 				console.log("Generating constraints...");
 				const conditions = [];
 				for (const entry of suggestedExecutionPath) conditions.push(

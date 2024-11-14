@@ -45,6 +45,8 @@ export default class SymbolicExecutor {
 	shadowedVariableStack: Map<string, SymbolicVariable>[] = [];
 	functionCalls: FunctionCall[] = [];
 
+	#nextMockedCallNumber: number = 0;
+
 	constructor() {
 		this.startScope();
 	}
@@ -255,6 +257,15 @@ export default class SymbolicExecutor {
 				const returnVariable = this.variableTable.get(makeVariableKey("[call]", callExpression));
 				if (returnVariable !== undefined) return returnVariable.value;
 				const functionExpression = callExpression.getExpression();
+				if (functionExpression.getText() === "__concolic$mock") {
+					const valueName = `__concolic$mock${this.#nextMockedCallNumber}`;
+					const valueType = callExpression.getTypeArguments()[0].getType();
+					const mockedValue = valueType.isObject() || valueType.isInterface()
+						? this.#generateObjectForParameter(valueName + '.', valueType)
+						: new VariableSymbolicExpression(valueName, true);
+					++this.#nextMockedCallNumber;
+					return mockedValue;
+				}
 				if (!Ts.Node.isPropertyAccessExpression(functionExpression))
 					throw new Error("Call expression's function expression is too complex.");
 				const functionContainerExpression = functionExpression.getExpression();

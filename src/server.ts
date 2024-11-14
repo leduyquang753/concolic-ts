@@ -11,17 +11,24 @@ import {Shescape} from "shescape";
 import * as StreamPromises from "stream/promises";
 import * as Ts from "ts-morph";
 
-import {transformProject} from "#r/execution/CodeTransformer";
+import type {ResolvedFunctionPath} from "#r/analysis/FunctionResolver";
+import TestabilityAnalysis from "#r/analysis/TestabilityAnalysis";
+import CodeTransformer from "#r/execution/CodeTransformer";
 import CoverageKind from "#r/execution/CoverageKind";
 import Executor from "#r/execution/Executor";
-import StatusStore from "#r/execution/StatusStore";
-import {getTestableFunctions} from "#r/project/Analysis";
+import type {TestCase} from "#r/execution/Executor";
+import StatusStore from "#r/utilities/StatusStore";
 import config from "./config.js";
 
+type FunctionEntry = {
+	name: string,
+	testable: boolean,
+	calledFunctions: ResolvedFunctionPath[]
+};
 type SourceFileEntry = {
 	kind: "file",
 	name: string,
-	functions: string[]
+	functions: FunctionEntry[]
 };
 type FolderEntry = {
 	kind: "folder",
@@ -145,13 +152,25 @@ server.delete("/projects/:id", {schema: {params: projectIdSchema}}, (request, re
 	reply.send();
 });
 
-function getFolderEntry(directory: Ts.Directory): FolderEntry {
+function getFolderEntry(testabilityAnalysis: TestabilityAnalysis, directory: Ts.Directory): FolderEntry {
 	return {kind: "folder", name: Path.basename(directory.getPath()), entries: [
-		...directory.getDirectories().map(getFolderEntry),
+		...directory.getDirectories()
+			.filter(directory => Path.basename(directory.getPath()) !== "node_modules")
+			.map(directory => getFolderEntry(testabilityAnalysis, directory)),
 		...directory.getSourceFiles().map((sourceFile: Ts.SourceFile): SourceFileEntry => ({
 			kind: "file",
 			name: Path.basename(sourceFile.getFilePath()),
-			functions: getTestableFunctions(sourceFile).map(func => func.getName()!)
+			functions: sourceFile.getFunctions().map(
+				func => ({functionDeclaration: func, analysisResult: testabilityAnalysis.analyzeFunction(func)})
+			).filter(
+				entry => entry.analysisResult !== null
+			).map(
+				entry => ({
+					name: entry.functionDeclaration.getNameOrThrow(),
+					testable: entry.functionDeclaration.isExported(),
+					calledFunctions: entry.analysisResult!.calledFunctions
+				})
+			)
 		})).filter(entry => entry.name !== "__concolic.ts" && entry.functions.length !== 0)
 	]};
 }
@@ -166,27 +185,44 @@ server.get("/projects/:id/functions", {schema: {params: projectIdSchema}}, async
 		reply.statusCode = 404;
 		return {error: "Project not found."};
 	}
-	const project = new Ts.Project({tsConfigFilePath: Path.join(projectPath, "original/tsconfig.json")});
-	return {kind: "directory", name: "[Root]", entries: project.getDirectories().map(getFolderEntry)};
+	const originalPath = Path.join(projectPath, "original");
+	const project = new Ts.Project({tsConfigFilePath: Path.join(originalPath, "tsconfig.json")});
+	const testabilityAnalysis = new TestabilityAnalysis(originalPath);
+	return {
+		kind: "directory", name: "[Root]",
+		entries: project.getDirectories()
+			.filter(directory => Path.basename(directory.getPath()) !== "node_modules")
+			.map(directory => getFolderEntry(testabilityAnalysis, directory))
+	};
 });
 
 server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 	type: "object",
 	required: ["functionsToTest", "coverageKind", "coverageTarget", "maxSearchDepth", "maxContextSize", "timeLimit"],
 	properties: {
-		functionsToTest: {
-			type: "array",
-			items: {
-				type: "object",
-				required: ["filePath", "functionName", "concolicDriverTemplate", "testDriverTemplate"],
-				properties: {
-					filePath: {type: "string"},
-					functionName: {type: "string"},
-					concolicDriverTemplate: {type: "string"},
-					testDriverTemplate: {type: "string"}
-				}
+		functionsToTest: {type: "array", items: {
+			type: "object",
+			required: [
+				"filePath", "functionName",
+				"concolicDriverTemplate", "testDriverTemplate",
+				"mockedFunctions"
+			],
+			properties: {
+				filePath: {type: "string"},
+				functionName: {type: "string"},
+				concolicDriverTemplate: {type: "string"},
+				testDriverTemplate: {type: "string"},
+				mockedFunctions: {type: "array", items: {
+					type: "object",
+					required: ["source", "container", "name"],
+					properties: {
+						source: {type: "string"},
+						container: {anyOf: [{type: "string"}, {type: "null"}]},
+						name: {type: "string"}
+					}
+				}}
 			}
-		},
+		}},
 		coverageKind: {enum: ["statement", "branch", "predicate"]},
 		coverageTarget: {type: "number", minimum: 0, maximum: 100}, // Percent.
 		maxSearchDepth: {type: "integer", minimum: 5},
@@ -206,7 +242,9 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 	}
 	const params = request.body as {
 		functionsToTest: {
-			filePath: string, functionName: string, concolicDriverTemplate: string, testDriverTemplate: string
+			filePath: string, functionName: string,
+			concolicDriverTemplate: string, testDriverTemplate: string,
+			mockedFunctions: ResolvedFunctionPath[]
 		}[],
 		coverageKind: "statement" | "branch" | "predicate",
 		coverageTarget: number,
@@ -233,20 +271,19 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 		const concolicPath = Path.join(projectPath, "concolic");
 		const testPath = Path.join(projectPath, "test");
 
-		statusStore.updateTaskProgress("Transforming code...");
-		await transformProject(originalPath, concolicPath, coverageKind);
-
 		statusStore.updateTaskProgress("Preparing for generation...");
 		// Ensure the concolic driver exists to prevent failure when resolving its compiled path.
 		const driverPath = Path.join(concolicPath, "__concolic.ts");
 		if (!FileSystem.existsSync(driverPath)) FileSystem.writeFileSync(driverPath, "", "utf8");
 
-		const project = new Ts.Project({tsConfigFilePath: Path.join(concolicPath, "tsconfig.json")});
-		for (const func of params.functionsToTest) {
-			const sourceFile = project.getSourceFile(Path.join(concolicPath, func.filePath));
-			if (sourceFile === undefined) throw new Error(`Source file \`${func.filePath}\` not found.`);
-			if (sourceFile.getFunction(func.functionName) === undefined)
-				throw new Error(`Function \`${func.functionName}\` not found in source file \`${func.filePath}\`.`);
+		{
+			const originalProject = new Ts.Project({tsConfigFilePath: Path.join(originalPath, "tsconfig.json")});
+			for (const func of params.functionsToTest) {
+				const sourceFile = originalProject.getSourceFile(Path.join(originalPath, func.filePath));
+				if (sourceFile === undefined) throw new Error(`Source file \`${func.filePath}\` not found.`);
+				if (sourceFile.getFunction(func.functionName) === undefined)
+					throw new Error(`Function \`${func.functionName}\` not found in source file \`${func.filePath}\`.`);
+			}
 		}
 
 		// Clean up old generated test files.
@@ -259,7 +296,7 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 			coverageKind: string,
 			coverageTarget: number,
 			generationResults: {
-				filePath: string, functionName: string, testCases: any[], coverage: number, time: number
+				filePath: string, functionName: string, testCases: TestCase[], coverage: number, time: number
 			}[]
 		} = {
 			status: "succeeded",
@@ -271,6 +308,9 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 			const functionProgressString
 				= `Generating for function ${functionNumber} / ${params.functionsToTest.length}:\n`
 				+ `${func.functionName} | ${func.filePath}\n`;
+			statusStore.updateTaskProgress(functionProgressString + "Transforming code...");
+			await new CodeTransformer(originalPath, concolicPath, coverageKind, func.mockedFunctions).transform();
+			const project = new Ts.Project({tsConfigFilePath: Path.join(concolicPath, "tsconfig.json")});
 			const {testCases, testDriver, coverage, time} = await new Executor(
 				concolicPath, project, func.filePath, func.functionName,
 				func.concolicDriverTemplate, func.testDriverTemplate,

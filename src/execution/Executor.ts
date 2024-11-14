@@ -27,6 +27,9 @@ import CoverageKind from "./CoverageKind.js";
 import DebuggerWebsocket from "./DebuggerWebsocket.js";
 
 type FunctionData = {cfg: Cfg, breakpoints: Breakpoint[]};
+export type MockedCall = {key: string, value: string};
+type InternalMockedCall = MockedCall & {parameterNames: Set<string>};
+export type TestCase = {parameters: {name: string, value: string}[], mockedValues: MockedCall[]};
 
 export default class Executor {
 	#projectPath: string;
@@ -37,6 +40,7 @@ export default class Executor {
 	#functionNameToTest: string;
 	#concolicDriverTemplate: string;
 	#testDriverTemplate: string;
+	#mockedFunctionKeys: Set<string> = new Set<string>();
 	#coverageKind: CoverageKind;
 	#coverageTarget: number;
 	#timeLimit: number;
@@ -76,7 +80,7 @@ export default class Executor {
 
 	// Current limitation: must only be invoked once per instance.
 	async execute(progressCallback: (testCount: number, coverage: number) => void): Promise<{
-		testCases: {name: string, value: string}[][], testDriver: string, coverage: number, time: number
+		testCases: TestCase[], testDriver: string, coverage: number, time: number
 	}> {
 		const cfg = this.#getFunctionData(this.#functionNameToTest).cfg;
 		if (this.#coverageKind === CoverageKind.STATEMENT) {
@@ -86,6 +90,10 @@ export default class Executor {
 			this.#increaseCoveredAmount(cfg.beginNode, false);
 		} else {
 			for (const node of iterateCfg(cfg)) if (isCfgNodeBranchable(node)) this.#totalCoverageAmount += 2;
+		}
+		if (this.#totalCoverageAmount === 0) {
+			this.#coveredAmount = 1;
+			this.#totalCoverageAmount = 1;
 		}
 		{
 			let parameterIndex = 0;
@@ -97,24 +105,26 @@ export default class Executor {
 				const topLevelParameterName
 					= Ts.Node.isIdentifier(nameNode) ? nameNode.getText() : `@${parameterIndex}`;
 				this.#topLevelParameterNames.push(topLevelParameterName);
-				collectParametersFromType(
-					"", topLevelParameterName, parameterDeclaration.getType(), this.#parameterNames
-				);
+				collectParametersFromType(topLevelParameterName, parameterDeclaration.getType(), this.#parameterNames);
 				++parameterIndex;
 			}
 		}
 		this.#startTime = new Date().getTime();
-		const testCases: {name: string, value: string}[][] = [];
-		let input: any | null = this.#generateInitialInput();
+		const testCases: TestCase[] = [];
+		let input: any | null = generateRandomInput(this.#parameterNames);
+		let newMockedCalls: InternalMockedCall[] = [];
 		while (input !== null) {
 			progressCallback(testCases.length, this.#coveredAmount / this.#totalCoverageAmount);
 			console.log("Inputs: " + Object.entries(input).map(entry => `${entry[0]} = ${entry[1]}`).join("; "));
 			this.#generateDriverScript(input);
 			const oldCoveredAmount = this.#coveredAmount;
-			const newInput = await this.#executeFunctionAndGetNextInput();
-			if (this.#coveredAmount !== oldCoveredAmount)
-				testCases.push(this.#topLevelParameterNames.map(name => ({name, value: input[name]})));
-			input = newInput;
+			const {mockedCalls, newValues} = await this.#executeFunctionAndGetNextInput(newMockedCalls);
+			if (this.#coveredAmount !== oldCoveredAmount) testCases.push({
+				parameters: this.#topLevelParameterNames.map(name => ({name, value: input[name]})),
+				mockedValues: mockedCalls.map(call => ({key: call.key, value: call.value}))
+			});
+			if (newValues === null) input = null;
+			else ({input, mockedCalls: newMockedCalls} = newValues);
 		}
 		console.log("Done.");
 		const globalDriverVariables = {
@@ -125,16 +135,28 @@ export default class Executor {
 			testCases,
 			testDriver: TemplateFile.render(this.#testDriverTemplate, {
 				...globalDriverVariables,
-				testCases: testCases.map(
-					testCase => ({...globalDriverVariables, params: testCase.map(arg => arg.value).join(", ")})
-				)
+				testCases: testCases.map(testCase => {
+					const mockedValues: any = {};
+					for (const call of testCase.mockedValues) {
+						if (!(call.key in mockedValues)) mockedValues[call.key] = [];
+						mockedValues[call.key].push(JSON.parse(call.value));
+					}
+					return {
+						...globalDriverVariables,
+						params: testCase.parameters.map(arg => arg.value).join(", "),
+						mockedValues: JSON.stringify(mockedValues)
+					};
+				})
 			}),
 			coverage: this.#coveredAmount / this.#totalCoverageAmount * 100,
 			time: (new Date().getTime() - this.#startTime) / 1000
 		};
 	}
 
-	async #executeFunctionAndGetNextInput(): Promise<any | null> {
+	async #executeFunctionAndGetNextInput(mockedCallsIn: InternalMockedCall[]): Promise<{
+		mockedCalls: InternalMockedCall[],
+		newValues: {input: any, mockedCalls: InternalMockedCall[]} | null
+	}> {
 		const sourceFilePath = this.#sourceFile.getFilePath();
 		const compiledFilePath = this.#getCompiledFilePath(sourceFilePath);
 
@@ -174,6 +196,7 @@ export default class Executor {
 		await websocket.waitForConnection();
 		console.log("Connected to the debugger.");
 		let scriptId = "";
+		let callFrameId = "";
 		let sourceMapPath = "";
 		let scriptParsed = false;
 		{
@@ -197,8 +220,12 @@ export default class Executor {
 		await websocket.waitForEvent("Debugger.paused");
 		while (!scriptParsed) {
 			websocket.sendCommand("Debugger.stepOver");
-			await websocket.waitForEvent("Debugger.paused");
+			callFrameId = (await websocket.waitForEvent("Debugger.paused")).callFrames[0].callFrameId;
 		}
+		websocket.sendCommand("Debugger.evaluateOnCallFrame", {
+			callFrameId, expression: "globalThis.__concolic$mockedValues = []"
+		});
+		await websocket.getCommandResponse();
 		const sourceMapConsumer = await new SourceMapConsumer(
 			FileSystem.readFileSync(Path.join(Path.dirname(compiledFilePath), sourceMapPath), "utf8")
 		);
@@ -222,8 +249,10 @@ export default class Executor {
 			cfg: Cfg, currentCfgNode: CfgNode, currentCodeNode: Ts.Node, pendingCallCfgNodes: CfgNode[]
 		}[] = [];
 		const parentCallPathStack: string[] = [];
-		let parentCallPathString: string = "";
+		let parentCallPathString = "";
 		const newExecutionPath: ExecutionEntry[] = [];
+		const mockedCalls = [...mockedCallsIn];
+		let currentMockedCallIndex = 0;
 
 		mainExecutionLoop: while (true) {
 			if (currentCfgNode === cfg.endNode && parentCalls.length === 0) break;
@@ -247,25 +276,52 @@ export default class Executor {
 						&& callPosition >= expressionNode.getStart() && callPosition < expressionNode.getEnd()
 					) {
 						const callExpression = callCfgNode.tsNode! as Ts.CallExpression;
-						const functionName = callExpression.getExpression().getText();
-						const calledFunction = this.#sourceFile.getFunctionOrThrow(functionName);
-						symbolicExecutor.prepareFunctionCall(
-							calledFunction, callCfgNode.tsNode! as Ts.CallExpression
-						);
-						pendingCallCfgNodes.shift();
-						parentCalls.push({cfg, currentCfgNode, currentCodeNode, pendingCallCfgNodes});
-						parentCallPathStack.push(callExpression.getStart().toString());
-						parentCallPathString
-							= parentCallPathStack.join(' ') + (parentCallPathStack.length === 0 ? "" : " ");
-						await this.#setBreakpoints(
-							functionName, functionsWithSetBreakpoints,
-							scriptId, sourceMapConsumer, sourceMapSourcePath, websocket, breakpointMap
-						);
-						cfg = this.#getFunctionData(functionName).cfg;
-						currentCfgNode = cfg.beginNode.primaryNext!;
-						currentCodeNode = calledFunction.getBody()!;
-						pendingCallCfgNodes = [];
-						continue mainExecutionLoop;
+						const calledExpression = callExpression.getExpression();
+						const functionName = calledExpression.getText();
+						if (functionName === "__concolic$mock") {
+							const key = (callExpression.getArguments()[0] as Ts.StringLiteral).getLiteralValue();
+							if (currentMockedCallIndex === mockedCalls.length) {
+								const mockParameters = new Set<string>();
+								const primaryName = `__concolic$mock${currentMockedCallIndex}`;
+								collectParametersFromType(
+									primaryName, callExpression.getTypeArguments()[0].getType(), mockParameters
+								);
+								mockedCalls.push({
+									key,
+									parameterNames: mockParameters,
+									value: generateRandomInput(mockParameters)[primaryName]
+								});
+							} else if (mockedCalls[currentMockedCallIndex].key !== key) {
+								throw new Error("Mocked call has unmatching key.");
+							}
+							websocket.sendCommand("Debugger.evaluateOnCallFrame", {
+								callFrameId,
+								expression: `globalThis.__concolic$mockedValues.push(${
+									mockedCalls[currentMockedCallIndex].value
+								})`
+							});
+							await websocket.getCommandResponse();
+							++currentMockedCallIndex;
+						} else {
+							const calledFunction = this.#sourceFile.getFunctionOrThrow(functionName);
+							symbolicExecutor.prepareFunctionCall(
+								calledFunction, callCfgNode.tsNode! as Ts.CallExpression
+							);
+							pendingCallCfgNodes.shift();
+							parentCalls.push({cfg, currentCfgNode, currentCodeNode, pendingCallCfgNodes});
+							parentCallPathStack.push(callExpression.getStart().toString());
+							parentCallPathString
+								= parentCallPathStack.join(' ') + (parentCallPathStack.length === 0 ? "" : " ");
+							await this.#setBreakpoints(
+								functionName, functionsWithSetBreakpoints,
+								scriptId, sourceMapConsumer, sourceMapSourcePath, websocket, breakpointMap
+							);
+							cfg = this.#getFunctionData(functionName).cfg;
+							currentCfgNode = cfg.beginNode.primaryNext!;
+							currentCodeNode = calledFunction.getBody()!;
+							pendingCallCfgNodes = [];
+							continue mainExecutionLoop;
+						}
 					}
 				}
 				symbolicExecutor.executeNode(currentCodeNode);
@@ -291,6 +347,7 @@ export default class Executor {
 				const event = await websocket.waitForAnyEvent();
 				if (event.method === "Debugger.paused") {
 					shouldResume = true;
+					callFrameId = event.params.callFrames[0].callFrameId;
 					const hitBreakpoint = breakpointMap[event.params.hitBreakpoints[0]];
 					if (hitBreakpoint.cfgNode === currentCfgNode) {
 						if (newExecutionPath.length < this.#currentExecutionPath.length) {
@@ -336,11 +393,11 @@ export default class Executor {
 		if (
 			this.#coveredAmount / this.#totalCoverageAmount >= this.#coverageTarget
 			|| new Date().getTime() - this.#startTime > this.#timeLimit
-		) return null;
+		) return {mockedCalls, newValues: null};
 		this.#branchSelector.addExecutionPath(newExecutionPath);
 		while (true) {
 			const suggestedExecutionPath = this.#branchSelector.getNextExecutionPath();
-			if (suggestedExecutionPath === null) return null;
+			if (suggestedExecutionPath === null) return {mockedCalls, newValues: null};
 			console.log("Generating constraints...");
 			const conditions = [];
 			for (const entry of suggestedExecutionPath) conditions.push(
@@ -371,11 +428,38 @@ export default class Executor {
 			}
 			this.#currentExecutionPath = suggestedExecutionPath;
 			const flatInputObject = Object.fromEntries([...smtString.matchAll(
-				/\(define-fun ([\w.@]+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
+				/\(define-fun ([\w_.@$]+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
 			)].map(entry => [entry[1], Number(entry[2].replaceAll(" ", ""))]));
 			for (const parameterName of this.#parameterNames) if (!usedParameters.has(parameterName))
 				flatInputObject[parameterName] = Math.floor(Math.random() * 201) - 100;
-			return buildInputObject(flatInputObject);
+			let usedMockedCalls = 0;
+			for (let i = mockedCalls.length - 1; i !== -1; --i) {
+				const mockedCall = mockedCalls[i];
+				if (usedMockedCalls === 0) {
+					for (const parameterName of mockedCall.parameterNames) if (usedParameters.has(parameterName)) {
+						usedMockedCalls = i + 1;
+						break;
+					}
+					if (usedMockedCalls === 0) continue;
+				}
+				for (const parameterName of mockedCall.parameterNames) {
+					if (!usedParameters.has(parameterName))
+						flatInputObject[parameterName] = Math.floor(Math.random() * 201) - 100;
+				}
+			}
+			const newInput = buildInputObject(flatInputObject);
+			const newMockedCalls: InternalMockedCall[] = [];
+			for (let i = 0; i !== usedMockedCalls; ++i) {
+				const name = `__concolic$mock${i}`;
+				const originalMockedCall = mockedCalls[i];
+				newMockedCalls.push({
+					key: originalMockedCall.key,
+					parameterNames: originalMockedCall.parameterNames,
+					value: newInput[name]
+				});
+				delete newInput[name];
+			}
+			return {mockedCalls, newValues: {input: newInput, mockedCalls: newMockedCalls}};
 		}
 	}
 
@@ -396,12 +480,6 @@ export default class Executor {
 			"utf8"
 		);
 		ChildProcess.execSync("tsc", {cwd: this.#projectPath, stdio: "ignore"});
-	}
-
-	#generateInitialInput(): any {
-		return buildInputObject(Object.fromEntries([...this.#parameterNames].map(
-			parameterName => [parameterName, Math.floor(Math.random() * 201) - 100]
-		)));
 	}
 
 	#getCompiledFilePath(sourceFilePath: string): string {
@@ -551,12 +629,12 @@ function getExpressionNode(tsNode: Ts.Node): Ts.Expression | null {
 	}
 }
 
-function collectParametersFromType(prefix: string, name: string, tsType: Ts.Type, parameterNames: Set<string>): void {
+function collectParametersFromType(name: string, tsType: Ts.Type, parameterNames: Set<string>): void {
 	if (tsType.isNumber()) {
-		parameterNames.add(prefix + name);
+		parameterNames.add(name);
 	} else if (tsType.isObject() || tsType.isInterface()) {
 		for (const property of tsType.getProperties()) collectParametersFromType(
-			prefix + name + '.', property.getName(), property.getDeclarations()[0].getType(), parameterNames
+			name + '.' + property.getName(), property.getDeclarations()[0].getType(), parameterNames
 		);
 	} else {
 		throw new Error("Non-number types are not yet supported.");
@@ -568,6 +646,12 @@ function collectUsedParametersFromCondition(condition: SymbolicExpression, usedP
 		usedParameters.add((condition as VariableSymbolicExpression).symbolicName);
 	else
 		for (const child of condition.getChildExpressions()) collectUsedParametersFromCondition(child, usedParameters);
+}
+
+function generateRandomInput(parameterNames: Set<string>): any {
+	return buildInputObject(Object.fromEntries([...parameterNames].map(
+		parameterName => [parameterName, Math.floor(Math.random() * 201) - 100]
+	)));
 }
 
 function buildInputObject(flatObject: any): any {

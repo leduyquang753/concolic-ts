@@ -41,6 +41,7 @@ export default class DebuggerWebsocket extends EventEmitter {
 		while (true) {
 			const message = await this.getMessage();
 			if ("result" in message) return message.result;
+			if ("error" in message) throw new Error(`Command failed: ${message.error.message}`);
 		}
 	}
 

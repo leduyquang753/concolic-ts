@@ -1,3 +1,5 @@
+import BaseSymbolicType from "#r/symbolic/BaseSymbolicType";
+
 import SymbolicExpression from "./SymbolicExpression.js";
 import SymbolicExpressionKind from "./SymbolicExpressionKind.js";
 
@@ -11,7 +13,7 @@ export default class ObjectSymbolicExpression extends SymbolicExpression {
 		this.value = value;
 	}
 
-	override get smtString(): string {
+	override generateSmt(): {expression: string, type: BaseSymbolicType} {
 		throw new TypeError("Object symbolic expression used in SMT expression.");
 	}
 

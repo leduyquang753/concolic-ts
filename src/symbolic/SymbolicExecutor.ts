@@ -1,12 +1,13 @@
 import * as Ts from "ts-morph";
 
+import type {ParameterType} from "#r/execution/Executor";
+
 import symbolicBuiltinClasses from "./builtins/SymbolicBuiltins.js";
 import BinarySymbolicExpression from "./expressions/BinarySymbolicExpression.js";
 import ConstantSymbolicExpression from "./expressions/ConstantSymbolicExpression.js";
 import ObjectSymbolicExpression from "./expressions/ObjectSymbolicExpression.js";
 import SymbolicExpression from "./expressions/SymbolicExpression.js";
 import SymbolicExpressionKind from "./expressions/SymbolicExpressionKind.js";
-import TernarySymbolicExpression from "./expressions/TernarySymbolicExpression.js";
 import UnarySymbolicExpression from "./expressions/UnarySymbolicExpression.js";
 import VariableSymbolicExpression from "./expressions/VariableSymbolicExpression.js";
 
@@ -45,10 +46,12 @@ export default class SymbolicExecutor {
 	shadowedVariableStack: Map<string, SymbolicVariable>[] = [];
 	functionCalls: FunctionCall[] = [];
 
+	#parameterInfo: Map<string, ParameterType>;
 	#nextMockedCallNumber: number = 0;
 
-	constructor() {
+	constructor(parameterInfo: Map<string, ParameterType>) {
 		this.startScope();
+		this.#parameterInfo = parameterInfo;
 	}
 
 	addParametersFromFunctionDeclaration(functionDeclaration: Ts.FunctionDeclaration): void {
@@ -61,7 +64,10 @@ export default class SymbolicExecutor {
 					(Ts.Node.isIdentifier(nameNode) ? nameNode.getText() : `@${parameterIndex}`) + '.',
 					parameterDeclaration.getType()
 				)
-				: new VariableSymbolicExpression(parameterDeclaration.getName(), true);
+				: new VariableSymbolicExpression(
+					parameterDeclaration.getName(), true,
+					this.#parameterInfo.get(parameterDeclaration.getName())!.baseType
+				);
 			switch (nameNode.getKind()) {
 				case Ts.SyntaxKind.Identifier:
 					this.addVariable(nameNode.getText(), value);
@@ -124,7 +130,7 @@ export default class SymbolicExecutor {
 			throw new Error("Parameter and argument list not matching in length are not supported yet.");
 		for (let i = 0; i !== argumentCount; ++i) {
 			const nameNode = parameters[i].getNameNode();
-			const value = this.evaluateExpression(callArguments[i] as Ts.Expression, true);
+			const value = this.evaluateExpression(callArguments[i] as Ts.Expression, true, false);
 			switch (nameNode.getKind()) {
 				case Ts.SyntaxKind.Identifier:
 					this.addVariable(nameNode.getText(), value);
@@ -159,13 +165,13 @@ export default class SymbolicExecutor {
 					case Ts.SyntaxKind.Identifier:
 						this.addVariable(nameNode.getText(), initializer === undefined
 							? new ConstantSymbolicExpression(undefined)
-							: this.evaluateExpression(initializer, true)
+							: this.evaluateExpression(initializer, true, false)
 						);
 						break;
 					case Ts.SyntaxKind.ObjectBindingPattern: {
 						if (initializer === undefined)
 							throw new Error("No initializer for object destructuring declaration.");
-						const source = this.evaluateExpression(initializer, true);
+						const source = this.evaluateExpression(initializer, true, false);
 						if (source.kind !== SymbolicExpressionKind.OBJECT)
 							throw new Error("Trying to destructure non-object symbolic expression.");
 						this.#executeDeclarationObjectBindingPattern(
@@ -179,12 +185,12 @@ export default class SymbolicExecutor {
 				break;
 			}
 			case Ts.SyntaxKind.ExpressionStatement:
-				this.evaluateExpression((tsNode as Ts.ExpressionStatement).getExpression(), true);
+				this.evaluateExpression((tsNode as Ts.ExpressionStatement).getExpression(), true, false);
 				break;
 			case Ts.SyntaxKind.ReturnStatement: {
 				const returnExpression = (tsNode as Ts.ReturnStatement).getExpression();
 				let returnSymbolicExpression: SymbolicExpression | null
-					= returnExpression === undefined ? null : this.evaluateExpression(returnExpression, true);
+					= returnExpression === undefined ? null : this.evaluateExpression(returnExpression, true, false);
 				const functionCall = this.functionCalls.pop()!;
 				while (this.scopeStack.length !== functionCall.scopeLevel) this.endScope();
 				if (returnSymbolicExpression !== null)
@@ -194,19 +200,34 @@ export default class SymbolicExecutor {
 		}
 	}
 
-	evaluateExpression(expression: Ts.Expression, executeAssignments: boolean = false): SymbolicExpression {
+	evaluateExpression(expression: Ts.Expression, executeAssignments: boolean, external: boolean): SymbolicExpression {
 		switch (expression.getKind()) {
 			case Ts.SyntaxKind.NumericLiteral:
 				return new ConstantSymbolicExpression((expression as Ts.NumericLiteral).getLiteralValue());
+			case Ts.SyntaxKind.StringLiteral:
+				return new ConstantSymbolicExpression((expression as Ts.StringLiteral).getLiteralValue());
 			case Ts.SyntaxKind.TrueKeyword:
 				return new ConstantSymbolicExpression(true);
 			case Ts.SyntaxKind.FalseKeyword:
 				return new ConstantSymbolicExpression(false);
 			case Ts.SyntaxKind.Identifier:
-				return this.variableTable.get(expression.getText())!.value.clone();
+				if (!external) {
+					const value = this.variableTable.get(expression.getText());
+					if (value !== undefined) return value.value.clone();
+				}
+				const declaration = (expression as Ts.Identifier).getSymbolOrThrow().getDeclarations().find(
+					Ts.Node.isVariableDeclaration
+				);
+				if (declaration === undefined) throw new Error("External variable declaration not found.");
+				if ((
+					declaration.getParentOrThrow().getParentOrThrow().getParentOrThrow() as Ts.VariableStatement
+				).getDeclarationKind() !== Ts.VariableDeclarationKind.Const)
+					throw new Error("Non-`const` external variables are not yet supported.");
+				return this.evaluateExpression(declaration.getInitializerOrThrow(), false, true);
 			case Ts.SyntaxKind.PropertyAccessExpression: {
 				const propertyAccessExpression = (expression as Ts.PropertyAccessExpression);
-				const objectSymbolicExpression = this.evaluateExpression(propertyAccessExpression.getExpression());
+				const objectSymbolicExpression
+					= this.evaluateExpression(propertyAccessExpression.getExpression(), false, external);
 				if (objectSymbolicExpression.kind !== SymbolicExpressionKind.OBJECT)
 					throw new Error("Trying to access property from non-object.");
 				const result = (objectSymbolicExpression as ObjectSymbolicExpression)
@@ -216,13 +237,13 @@ export default class SymbolicExecutor {
 			}
 			case Ts.SyntaxKind.ParenthesizedExpression:
 				return this.evaluateExpression(
-					(expression as Ts.ParenthesizedExpression).getExpression(), executeAssignments
+					(expression as Ts.ParenthesizedExpression).getExpression(), executeAssignments, external
 				);
 			case Ts.SyntaxKind.PrefixUnaryExpression: {
 				const unaryExpression = expression as Ts.PrefixUnaryExpression;
 				return new UnarySymbolicExpression(
 					Ts.ts.tokenToString(unaryExpression.getOperatorToken())!,
-					this.evaluateExpression(unaryExpression.getOperand(), executeAssignments)
+					this.evaluateExpression(unaryExpression.getOperand(), executeAssignments, external)
 				);
 			}
 			case Ts.SyntaxKind.BinaryExpression: {
@@ -231,26 +252,19 @@ export default class SymbolicExecutor {
 				const assignmentOperator = assignmentOperatorMap[binaryExpression.getOperatorToken().getText()];
 				if (assignmentOperator === undefined) return new BinarySymbolicExpression(
 					binaryExpression.getOperatorToken().getText(),
-					this.evaluateExpression(binaryExpression.getLeft(), executeAssignments),
-					this.evaluateExpression(binaryExpression.getRight(), executeAssignments)
+					this.evaluateExpression(binaryExpression.getLeft(), executeAssignments, external),
+					this.evaluateExpression(binaryExpression.getRight(), executeAssignments, external)
 				);
-				let newValueExpression = this.evaluateExpression(binaryExpression.getRight(), executeAssignments);
+				let newValueExpression
+					= this.evaluateExpression(binaryExpression.getRight(), executeAssignments, external);
 				if (assignmentOperator !== "=") newValueExpression = new BinarySymbolicExpression(
 					assignmentOperator,
-					this.evaluateExpression(binaryExpression.getLeft(), executeAssignments),
+					this.evaluateExpression(binaryExpression.getLeft(), executeAssignments, external),
 					newValueExpression
 				);
 				if (!executeAssignments) return newValueExpression;
 				this.#executeAssignment(binaryExpression.getLeft(), newValueExpression);
 				return newValueExpression;
-			}
-			case Ts.SyntaxKind.ConditionalExpression: {
-				const conditionalExpression = expression as Ts.ConditionalExpression;
-				return new TernarySymbolicExpression(
-					this.evaluateExpression(conditionalExpression.getCondition(), executeAssignments),
-					this.evaluateExpression(conditionalExpression.getWhenTrue(), executeAssignments),
-					this.evaluateExpression(conditionalExpression.getWhenFalse(), executeAssignments)
-				);
 			}
 			case Ts.SyntaxKind.CallExpression: {
 				const callExpression = expression as Ts.CallExpression;
@@ -262,7 +276,7 @@ export default class SymbolicExecutor {
 					const valueType = callExpression.getTypeArguments()[0].getType();
 					const mockedValue = valueType.isObject() || valueType.isInterface()
 						? this.#generateObjectForParameter(valueName + '.', valueType)
-						: new VariableSymbolicExpression(valueName, true);
+						: new VariableSymbolicExpression(valueName, true, this.#parameterInfo.get(valueName)!.baseType);
 					++this.#nextMockedCallNumber;
 					return mockedValue;
 				}
@@ -280,7 +294,7 @@ export default class SymbolicExecutor {
 					`Built-in class ${className} does not have function ${functionExpression.getName()}.`
 				);
 				return builtinFunction(callExpression.getArguments().map(
-					argument => this.evaluateExpression(argument as Ts.Expression, executeAssignments)
+					argument => this.evaluateExpression(argument as Ts.Expression, executeAssignments, external)
 				));
 			}
 			case Ts.SyntaxKind.ObjectLiteralExpression: {
@@ -291,19 +305,22 @@ export default class SymbolicExecutor {
 				) switch (property.getKind()) {
 					case Ts.SyntaxKind.PropertyAssignment: {
 						const propertyAssignment = property as Ts.PropertyAssignment;
-						objectValue[propertyAssignment.getName()]
-							= this.evaluateExpression(propertyAssignment.getInitializer()!, executeAssignments);
+						objectValue[propertyAssignment.getName()] = this.evaluateExpression(
+							propertyAssignment.getInitializer()!, executeAssignments, external
+						);
 						break;
 					}
 					case Ts.SyntaxKind.ShorthandPropertyAssignment: {
 						const shorthandPropertyAssignment = property as Ts.ShorthandPropertyAssignment;
-						objectValue[shorthandPropertyAssignment.getName()]
-							= this.evaluateExpression(shorthandPropertyAssignment.getNameNode(), executeAssignments);
+						objectValue[shorthandPropertyAssignment.getName()] = this.evaluateExpression(
+							shorthandPropertyAssignment.getNameNode(), executeAssignments, external
+						);
 						break;
 					}
 					case Ts.SyntaxKind.SpreadAssignment: {
-						const sourceSymbolicExpression
-							= this.evaluateExpression((property as Ts.SpreadAssignment).getExpression());
+						const sourceSymbolicExpression = this.evaluateExpression(
+							(property as Ts.SpreadAssignment).getExpression(), false, external
+						);
 						if (sourceSymbolicExpression.kind !== SymbolicExpressionKind.OBJECT)
 							throw new Error("Spread operator is using a non-object value.");
 						for (
@@ -329,10 +346,10 @@ export default class SymbolicExecutor {
 			if (subType.isObject()) {
 				object.value[property.getName()]
 					= this.#generateObjectForParameter(prefix + property.getName() + '.', subType);
-			} else if (subType.isNumber()) {
-				object.value[property.getName()] = new VariableSymbolicExpression(prefix + property.getName(), true);
 			} else {
-				throw new Error("Non-number types are not yet supported.");
+				const fullName = prefix + property.getName();
+				object.value[property.getName()]
+					= new VariableSymbolicExpression(fullName, true, this.#parameterInfo.get(fullName)!.baseType);
 			}
 		}
 		return object;
@@ -360,14 +377,14 @@ export default class SymbolicExecutor {
 						if (propertyName === null) propertyName = name;
 						this.addVariable(name, source.value[propertyName] ?? (defaultExpression === undefined
 							? new ConstantSymbolicExpression(undefined)
-							: this.evaluateExpression(defaultExpression, true)
+							: this.evaluateExpression(defaultExpression, true, false)
 						));
 						extractedNames.add(propertyName);
 					}
 					break;
 				case Ts.SyntaxKind.ObjectBindingPattern: {
 					const value = source.value[propertyName!] ?? (
-						defaultExpression === undefined ? null : this.evaluateExpression(defaultExpression, true)
+						defaultExpression === undefined ? null : this.evaluateExpression(defaultExpression, true, false)
 					);
 					if (value === null) throw new Error("Trying to get non-existent property from object.");
 					if (value.kind !== SymbolicExpressionKind.OBJECT)
@@ -395,7 +412,7 @@ export default class SymbolicExecutor {
 				const defaultExpression = shorthandPropertyAssignment.getObjectAssignmentInitializer();
 				this.variableTable.get(name)!.value = source.value[name] ?? (defaultExpression === undefined
 					? new ConstantSymbolicExpression(undefined)
-					: this.evaluateExpression(defaultExpression, true)
+					: this.evaluateExpression(defaultExpression, true, false)
 				);
 				extractedNames.add(name);
 				break;
@@ -411,7 +428,7 @@ export default class SymbolicExecutor {
 				}
 				this.#executeAssignment(target, source.value[propertyName] ?? (defaultExpression === null
 					? new ConstantSymbolicExpression(undefined)
-					: this.evaluateExpression(defaultExpression, true)
+					: this.evaluateExpression(defaultExpression, true, false)
 				));
 				extractedNames.add(propertyName);
 				break;
@@ -435,7 +452,8 @@ export default class SymbolicExecutor {
 				break;
 			case Ts.SyntaxKind.PropertyAccessExpression: {
 				const propertyAccessExpression = target as Ts.PropertyAccessExpression;
-				const objectSymbolicExpression = this.evaluateExpression(propertyAccessExpression.getExpression());
+				const objectSymbolicExpression
+					= this.evaluateExpression(propertyAccessExpression.getExpression(), false, false);
 				if (objectSymbolicExpression.kind !== SymbolicExpressionKind.OBJECT)
 					throw new Error("Trying to access property from non-object.");
 				const object = (objectSymbolicExpression as ObjectSymbolicExpression).value;

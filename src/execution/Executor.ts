@@ -8,11 +8,13 @@ import * as Ts from "ts-morph";
 import * as Url from "url";
 
 import config from "#r/config";
+import {formatSmtNumber, formatSmtString, parseSmtString} from "#r/CommonUtils";
 import type {Cfg} from "#r/cfg/Cfg";
 import {compactCfg, iterateCfg} from "#r/cfg/Cfg";
 import type CfgNode from "#r/cfg/CfgNode";
 import CfgNodeKind from "#r/cfg/CfgNodeKind";
 import {generateCfgFromFunction} from "#r/cfg/CfgGenerator";
+import BaseSymbolicType from "#r/symbolic/BaseSymbolicType";
 import SymbolicExecutor from "#r/symbolic/SymbolicExecutor";
 import SymbolicExpression from "#r/symbolic/expressions/SymbolicExpression";
 import SymbolicExpressionKind from "#r/symbolic/expressions/SymbolicExpressionKind";
@@ -27,6 +29,7 @@ import CoverageKind from "./CoverageKind.js";
 import DebuggerWebsocket from "./DebuggerWebsocket.js";
 
 type FunctionData = {cfg: Cfg, breakpoints: Breakpoint[]};
+export type ParameterType = {baseType: BaseSymbolicType, literalValues: any[], literalOnly: boolean};
 export type MockedCall = {key: string, value: string};
 type InternalMockedCall = MockedCall & {parameterNames: Set<string>};
 export type TestCase = {parameters: {name: string, value: string}[], mockedValues: MockedCall[]};
@@ -48,6 +51,7 @@ export default class Executor {
 	#functionDataMap: {[name: string]: FunctionData | undefined} = {};
 	#topLevelParameterNames: string[] = [];
 	#parameterNames: Set<string> = new Set<string>();
+	#parameterInfo: Map<string, ParameterType> = new Map<string, ParameterType>();
 	#coveredCfgNodes: Set<CfgNode> = new Set<CfgNode>();
 	#halfCoveredCfgNodes: Map<CfgNode, boolean> = new Map<CfgNode, boolean>();
 	#currentExecutionPath: ExecutionEntry[] = [];
@@ -105,13 +109,15 @@ export default class Executor {
 				const topLevelParameterName
 					= Ts.Node.isIdentifier(nameNode) ? nameNode.getText() : `@${parameterIndex}`;
 				this.#topLevelParameterNames.push(topLevelParameterName);
-				collectParametersFromType(topLevelParameterName, parameterDeclaration.getType(), this.#parameterNames);
+				collectParametersFromType(
+					topLevelParameterName, parameterDeclaration.getType(), this.#parameterNames, this.#parameterInfo
+				);
 				++parameterIndex;
 			}
 		}
 		this.#startTime = new Date().getTime();
 		const testCases: TestCase[] = [];
-		let input: any | null = generateRandomInput(this.#parameterNames);
+		let input: any | null = generateRandomInput(this.#parameterNames, this.#parameterInfo);
 		let newMockedCalls: InternalMockedCall[] = [];
 		while (input !== null) {
 			progressCallback(testCases.length, this.#coveredAmount / this.#totalCoverageAmount);
@@ -162,7 +168,7 @@ export default class Executor {
 
 		console.log("Starting debugger...");
 		const process = ChildProcess.spawn("node", [
-			"--inspect-brk=9339", "--enable-source-maps",
+			`--inspect-brk=${config.debuggerPort}`, "--enable-source-maps",
 			this.#getCompiledFilePath(this.#project.getSourceFileOrThrow("__concolic.ts").getFilePath())
 		], {cwd: this.#projectPath, stdio: "pipe"});
 		process.stdout!.on("data", data => {});
@@ -170,7 +176,7 @@ export default class Executor {
 		const debuggerUrl = await new Promise<string>((resolve, reject) => {
 			let failureCount = 0;
 			const routine = () => {
-				const request = Http.get("http://127.0.0.1:9339/json");
+				const request = Http.get(`http://127.0.0.1:${config.debuggerPort}/json`);
 				request.on("error", () => {
 					++failureCount;
 					if (failureCount === 100) reject(new Error("Failed to contact the debugger after 100 tries."));
@@ -239,7 +245,7 @@ export default class Executor {
 		console.log("Set initial breakpoints, now running.");
 
 		const functionToTest = this.#sourceFile.getFunctionOrThrow(this.#functionNameToTest);
-		const symbolicExecutor = new SymbolicExecutor();
+		const symbolicExecutor = new SymbolicExecutor(this.#parameterInfo);
 		symbolicExecutor.addParametersFromFunctionDeclaration(functionToTest);
 		let cfg = this.#getFunctionData(this.#functionNameToTest).cfg;
 		let currentCfgNode: CfgNode = cfg.beginNode.primaryNext!;
@@ -284,12 +290,13 @@ export default class Executor {
 								const mockParameters = new Set<string>();
 								const primaryName = `__concolic$mock${currentMockedCallIndex}`;
 								collectParametersFromType(
-									primaryName, callExpression.getTypeArguments()[0].getType(), mockParameters
+									primaryName, callExpression.getTypeArguments()[0].getType(),
+									mockParameters, this.#parameterInfo
 								);
 								mockedCalls.push({
 									key,
 									parameterNames: mockParameters,
-									value: generateRandomInput(mockParameters)[primaryName]
+									value: generateRandomInput(mockParameters, this.#parameterInfo)[primaryName]
 								});
 							} else if (mockedCalls[currentMockedCallIndex].key !== key) {
 								throw new Error("Mocked call has unmatching key.");
@@ -402,15 +409,22 @@ export default class Executor {
 			const conditions = [];
 			for (const entry of suggestedExecutionPath) conditions.push(
 				entry.isSecondaryBranch
-				? new UnarySymbolicExpression("!", entry.branchingCondition).trySimplify(true)
+				? new UnarySymbolicExpression("!", entry.branchingCondition)
 				: entry.branchingCondition
 			);
 			const usedParameters = new Set<string>();
 			for (const condition of conditions) collectUsedParametersFromCondition(condition, usedParameters);
 			let smtString = "(set-option :pp.decimal true)\n";
-			for (const parameter of usedParameters) smtString += `(declare-const ${parameter} Real)\n`;
-			for (const condition of conditions) smtString += `(assert ${condition.smtString})\n`;
-			smtString += "(check-sat-using qfnra-nlsat)\n(get-model)\n";
+			let constraintsHaveStrings = false;
+			for (const parameter of usedParameters) {
+				smtString += generateSmtForParameter(parameter, this.#parameterInfo);
+				constraintsHaveStrings ||= this.#parameterInfo.get(parameter)!.baseType === BaseSymbolicType.STRING;
+			}
+			for (const condition of conditions) smtString += `(assert ${condition.generateSmt().expression})\n`;
+			smtString += (
+				(constraintsHaveStrings ? "(check-sat)" : "(check-sat-using qfnra-nlsat)")
+				+ "\n(get-model)\n"
+			);
 			const smtFilePath = Path.join(this.#projectPath, "smt.txt");
 			FileSystem.writeFileSync(smtFilePath, smtString, "utf8");
 			console.log("Solving constraints...");
@@ -428,8 +442,25 @@ export default class Executor {
 			}
 			this.#currentExecutionPath = suggestedExecutionPath;
 			const flatInputObject = Object.fromEntries([...smtString.matchAll(
-				/\(define-fun ([\w_.@$]+) \(\) Real[^\d\(]+\(?((?:- )?[\d\.]+)\??\)/g
-			)].map(entry => [entry[1], Number(entry[2].replaceAll(" ", ""))]));
+				/\(define-fun ([\w_.@$]+) \(\) (?:Real[^\d\(]+\(?((?:- )?[\d\.]+)\??|String[^"]+"([^"]*)"|Bool[^\w]+(\w+))\)/g
+			)].map(entry => {
+				const name = entry[1];
+				let value: any;
+				switch (this.#parameterInfo.get(name)!.baseType) {
+					case BaseSymbolicType.NUMBER:
+						value = Number(entry[2].replaceAll(" ", ""));
+						break;
+					case BaseSymbolicType.STRING:
+						value = parseSmtString(entry[3]);
+						break;
+					case BaseSymbolicType.BOOLEAN:
+						value = entry[4] === "true";
+						break;
+					default:
+						throw new Error("Unhandled base symbolic type.");
+				}
+				return [name, value];
+			}));
 			for (const parameterName of this.#parameterNames) if (!usedParameters.has(parameterName))
 				flatInputObject[parameterName] = Math.floor(Math.random() * 201) - 100;
 			let usedMockedCalls = 0;
@@ -610,7 +641,9 @@ function getBranchingCondition(cfgNode: CfgNode, symbolicExecutor: SymbolicExecu
 	switch (tsNode.getKind()) {
 		case Ts.SyntaxKind.IfStatement:
 		case Ts.SyntaxKind.WhileStatement:
-			return symbolicExecutor.evaluateExpression((tsNode as Ts.IfStatement | Ts.WhileStatement).getExpression());
+			return symbolicExecutor.evaluateExpression(
+				(tsNode as Ts.IfStatement | Ts.WhileStatement).getExpression(), false, false
+			);
 		default:
 			throw new Error(`Syntax kind ${tsNode.getKindName()} not supported yet.`);
 	}
@@ -629,15 +662,67 @@ function getExpressionNode(tsNode: Ts.Node): Ts.Expression | null {
 	}
 }
 
-function collectParametersFromType(name: string, tsType: Ts.Type, parameterNames: Set<string>): void {
-	if (tsType.isNumber()) {
-		parameterNames.add(name);
-	} else if (tsType.isObject() || tsType.isInterface()) {
+function analyzeParameterType(tsType: Ts.Type): ParameterType {
+	if (tsType.isNumber()) return {baseType: BaseSymbolicType.NUMBER, literalValues: [], literalOnly: false};
+	if (tsType.isNumberLiteral())
+		return {baseType: BaseSymbolicType.NUMBER, literalValues: [tsType.getLiteralValue()], literalOnly: true};
+	if (tsType.isString()) return {baseType: BaseSymbolicType.STRING, literalValues: [], literalOnly: false};
+	if (tsType.isStringLiteral())
+		return {baseType: BaseSymbolicType.STRING, literalValues: [tsType.getLiteralValue()], literalOnly: true};
+	if (tsType.isBoolean()) return {baseType: BaseSymbolicType.BOOLEAN, literalValues: [], literalOnly: false};
+	if (tsType.isBooleanLiteral())
+		return {baseType: BaseSymbolicType.BOOLEAN, literalValues: [tsType.getLiteralValue()], literalOnly: true};
+	if (tsType.isUnion()) {
+		const baseTypes = tsType.getUnionTypes().map(baseType => analyzeParameterType(baseType));
+		if (baseTypes.some(baseType => baseType.baseType !== baseTypes[0].baseType))
+			throw new Error("Union of different base types is not supported yet.");
+		const literalValues = new Set<any>();
+		let literalOnly = true;
+		for (const baseType of baseTypes) {
+			for (const value of baseType.literalValues) literalValues.add(value);
+			literalOnly ||= baseType.literalOnly;
+		}
+		return {baseType: baseTypes[0].baseType, literalValues: [...literalValues], literalOnly};
+	}
+	if (tsType.isIntersection()) {
+		const baseTypes = tsType.getIntersectionTypes().map(baseType => analyzeParameterType(baseType));
+		if (baseTypes.some(baseType => baseType.baseType !== baseTypes[0].baseType))
+			throw new Error("Intersection of different base types results in empty type.");
+		const literalValues = new Set<any>();
+		let literalOnly = false;
+		for (const baseType of baseTypes) {
+			if (literalOnly) {
+				if (baseType.literalOnly) {
+					const newLiteralValues: any[] = [];
+					for (const value of baseType.literalValues)
+						if (!literalValues.has(value)) newLiteralValues.push(value);
+					literalValues.clear();
+					for (const value of newLiteralValues) literalValues.add(value);
+				}
+			} else {
+				if (baseType.literalOnly) {
+					literalOnly = true;
+					literalValues.clear();
+				}
+				for (const value of baseType.literalValues) literalValues.add(value);
+			}
+		}
+		return {baseType: baseTypes[0].baseType, literalValues: [...literalValues], literalOnly};
+	}
+	throw new Error(`Unsupported parameter type \`${tsType.getText()}\`.`);
+}
+
+function collectParametersFromType(
+	name: string, tsType: Ts.Type,
+	parameterNames: Set<string>, parameterInfo: Map<string, ParameterType>
+): void {
+	if (tsType.isObject() || tsType.isInterface()) {
 		for (const property of tsType.getProperties()) collectParametersFromType(
-			name + '.' + property.getName(), property.getDeclarations()[0].getType(), parameterNames
+			name + '.' + property.getName(), property.getDeclarations()[0].getType(), parameterNames, parameterInfo
 		);
 	} else {
-		throw new Error("Non-number types are not yet supported.");
+		parameterNames.add(name);
+		parameterInfo.set(name, analyzeParameterType(tsType));
 	}
 }
 
@@ -648,10 +733,25 @@ function collectUsedParametersFromCondition(condition: SymbolicExpression, usedP
 		for (const child of condition.getChildExpressions()) collectUsedParametersFromCondition(child, usedParameters);
 }
 
-function generateRandomInput(parameterNames: Set<string>): any {
+function generateRandomInput(parameterNames: Set<string>, parameterInfo: Map<string, ParameterType>): any {
 	return buildInputObject(Object.fromEntries([...parameterNames].map(
-		parameterName => [parameterName, Math.floor(Math.random() * 201) - 100]
+		parameterName => [parameterName, generateRandomValue(parameterInfo.get(parameterName)!)]
 	)));
+}
+
+function generateRandomValue(type: ParameterType): any {
+	if (type.literalValues.length !== 0)
+		return type.literalValues[Math.floor(Math.random() * type.literalValues.length)];
+	switch (type.baseType) {
+		case BaseSymbolicType.NUMBER:
+			return Math.floor(Math.random() * 201) - 100; // Integer from -100 to 100.
+		case BaseSymbolicType.STRING:
+			return String.fromCharCode(97 + Math.floor(Math.random() * 26)); // One lowercase character.
+		case BaseSymbolicType.BOOLEAN:
+			return Math.random() < 0.5;
+		default:
+			throw new Error("Unhandled base symbolic type.");
+	}
 }
 
 function buildInputObject(flatObject: any): any {
@@ -667,4 +767,42 @@ function buildInputObject(flatObject: any): any {
 		containerObject[terminalName] = value;
 	}
 	return Object.fromEntries(Object.entries(inputObject).map(([key, value]) => [key, JSON.stringify(value)]));
+}
+
+function generateSmtForParameter(name: string, parameterInfo: Map<string, ParameterType>): string {
+	const type = parameterInfo.get(name)!;
+	switch (type.baseType) {
+		case BaseSymbolicType.NUMBER: {
+			let smt = `(declare-const ${name} Real)\n`;
+			if (type.literalOnly) {
+				smt += "(assert (or";
+				for (const value of type.literalValues)
+					smt += ` (= ${name} ${formatSmtNumber(value as number)})`;
+				smt += "))\n";
+			}
+			return smt;
+		}
+		case BaseSymbolicType.STRING: {
+			let smt = `(declare-const ${name} String)\n`;
+			if (type.literalOnly) {
+				smt += "(assert (or";
+				for (const value of type.literalValues)
+					smt += ` (= ${name} ${formatSmtString(value as string)})`;
+				smt += "))\n";
+			}
+			return smt;
+		}
+		case BaseSymbolicType.BOOLEAN: {
+			let smt = `(declare-const ${name} Bool)\n`;
+			if (type.literalOnly) {
+				smt += "(assert (or";
+				for (const value of type.literalValues)
+					smt += ` (= ${name} ${value as boolean})`;
+				smt += "))\n";
+			}
+			return smt;
+		}
+		default:
+			throw new Error("Unhandled base symbolic type.");
+	}
 }

@@ -1,3 +1,5 @@
+import BaseSymbolicType from "#r/symbolic/BaseSymbolicType";
+
 import SymbolicExpressionKind from "./SymbolicExpressionKind.js";
 
 abstract class SymbolicExpression {
@@ -7,11 +9,7 @@ abstract class SymbolicExpression {
 		this.kind = kind;
 	}
 
-	trySimplify(recurse: boolean): SymbolicExpression {
-		return this;
-	}
-
-	abstract get smtString(): string;
+	abstract generateSmt(): {expression: string, type: BaseSymbolicType};
 	abstract getChildExpressions(): SymbolicExpression[];
 	abstract clone(): SymbolicExpression;
 }

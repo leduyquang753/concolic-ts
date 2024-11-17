@@ -38,7 +38,7 @@ type FolderEntry = {
 type ProjectBasicInfo = {id: string, name: string};
 type ProjectStatus = {status: "new"}
 	| {status: "taskRunning", taskId: string, taskKind: string}
-	| {status: "generated", generationInfo: {time: string, succeeded: boolean}};
+	| {status: "generated", succeeded: boolean};
 type ProjectInfo = ProjectBasicInfo & ProjectStatus;
 
 const projectIdSchema = {type: "object", properties: {id: {type: "string", pattern: "^[a-z0-9]{10}$"}}};
@@ -60,11 +60,19 @@ server.get("/status", {websocket: true}, (socket, request) => {
 function getProjectInfo(projectId: string): ProjectInfo {
 	const projectPath = Path.join(config.storagePath, projectId);
 	const currentTask = statusStore.currentTask;
+	const resultPath = Path.join(projectPath, "generationResult.json");
 	return {
 		...(JSON.parse(FileSystem.readFileSync(Path.join(projectPath, "info.json"), "utf8")) as ProjectBasicInfo),
 		...(
 			currentTask === null || currentTask.projectId !== projectId
-			? JSON.parse(FileSystem.readFileSync(Path.join(projectPath, "status.json"), "utf8")) as ProjectStatus
+			? FileSystem.existsSync(resultPath)
+				? {
+					status: "generated",
+					succeeded: (JSON.parse(
+						FileSystem.readFileSync(resultPath, "utf8")
+					) as {status: string}).status === "succeeded"
+				}
+				: {status: "new"}
 			: {status: "taskRunning", taskId: currentTask.taskId, taskKind: currentTask.taskKind}
 		)
 	};

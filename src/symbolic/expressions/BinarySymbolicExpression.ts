@@ -1,8 +1,10 @@
+import BaseSymbolicType from "#r/symbolic/BaseSymbolicType";
+
 import ConstantSymbolicExpression from "./ConstantSymbolicExpression.js";
 import SymbolicExpression from "./SymbolicExpression.js";
 import SymbolicExpressionKind from "./SymbolicExpressionKind.js";
 
-const smtOperatorMap: {[jsOperator: string]: string | undefined} = {
+const numberSmtOperatorMap: {[jsOperator: string]: string | undefined} = {
 	"%": "mod",
 	"**": "^",
 	"==": "=",
@@ -13,6 +15,21 @@ const smtOperatorMap: {[jsOperator: string]: string | undefined} = {
 	"||": "or",
 	"^": "xor"
 };
+const stringSmtOperatorMap: {[jsOperator: string]: [string, boolean] | undefined} = {
+	"+": ["str.++", false],
+	"==": ["=", false],
+	"===": ["=", false],
+	"!=": ["distinct", false],
+	"!==": ["distinct", false],
+	"<": ["str.<", false],
+	"<=": ["str.<=", false],
+	">": ["str.<", true],
+	">=": ["str.<=", true]
+};
+
+const comparisonOperators = new Set<string>([
+	"==", "===", "!=", "!==", "<", "<=", ">", ">="
+]);
 
 export default class BinarySymbolicExpression extends SymbolicExpression {
 	operator: string;
@@ -26,101 +43,30 @@ export default class BinarySymbolicExpression extends SymbolicExpression {
 		this.rightOperand = rightOperand;
 	}
 
-	override trySimplify(recurse: boolean): SymbolicExpression {
-		const simplifiedLeft = recurse ? this.leftOperand.trySimplify(recurse) : this.leftOperand;
-		const simplifiedRight = recurse ? this.rightOperand.trySimplify(recurse) : this.rightOperand;
-		if (simplifiedLeft.kind === SymbolicExpressionKind.CONSTANT) {
-			const constantLeft = simplifiedLeft as ConstantSymbolicExpression;
-			const simplifiedWithConstant = this.simplifyExpressionWithConstant(constantLeft, simplifiedRight);
-			if (simplifiedWithConstant !== null) return simplifiedWithConstant;
-			if (simplifiedRight.kind === SymbolicExpressionKind.CONSTANT) {
-				const constantRight = simplifiedRight as ConstantSymbolicExpression;
-				switch (this.operator) {
-					case '+':
-						return new ConstantSymbolicExpression(constantLeft.value + constantRight.value);
-					case '-':
-						return new ConstantSymbolicExpression(constantLeft.value - constantRight.value);
-					case '*':
-						return new ConstantSymbolicExpression(constantLeft.value * constantRight.value);
-					case '/':
-						if (constantRight.value !== 0) {
-							return new ConstantSymbolicExpression(constantLeft.value / constantRight.value);
-						} else {
-							throw new Error("Division by zero");
-						}
-					case '%':
-						return new ConstantSymbolicExpression(constantLeft.value % constantRight.value);
-					case '>':
-						return new ConstantSymbolicExpression(constantLeft.value > constantRight.value);
-					case '>=':
-						return new ConstantSymbolicExpression(constantLeft.value >= constantRight.value);
-					case '<':
-						return new ConstantSymbolicExpression(constantLeft.value < constantRight.value);
-					case '<=':
-						return new ConstantSymbolicExpression(constantLeft.value <= constantRight.value);
-					case '===':
-					case '==':
-						return new ConstantSymbolicExpression(constantLeft.value === constantRight.value);
-					case '!==':
-					case '!=':
-						return new ConstantSymbolicExpression(constantLeft.value !== constantRight.value);
-				}
-			}
+	override generateSmt(): {expression: string, type: BaseSymbolicType} {
+		const leftSmt = this.leftOperand.generateSmt();
+		const rightSmt = this.rightOperand.generateSmt();
+		if (leftSmt.type !== rightSmt.type)
+			throw new Error("Binary operations with different types are not yet supported.");
+		let smtOperator = "";
+		let shouldReverse = false;
+		switch (leftSmt.type) {
+			case BaseSymbolicType.NUMBER:
+			case BaseSymbolicType.BOOLEAN:
+				smtOperator = numberSmtOperatorMap[this.operator] ?? this.operator;
+				break;
+			case BaseSymbolicType.STRING:
+				[smtOperator, shouldReverse] = stringSmtOperatorMap[this.operator] ?? [this.operator, false];
+				break;
+			default:
+				throw new Error("Unhandled base symbolic type.");
 		}
-		if (simplifiedRight.kind === SymbolicExpressionKind.CONSTANT) {
-			const simplifiedWithConstant = this.simplifyExpressionWithConstant(
-				simplifiedRight as ConstantSymbolicExpression, simplifiedLeft
-			);
-			if (simplifiedWithConstant !== null) return simplifiedWithConstant;
-		}
-		if (simplifiedLeft.kind === SymbolicExpressionKind.BINARY) {
-			const simplifiedWithConstant = this.simplifyDistributedMultiplication(
-				simplifiedRight, simplifiedLeft as BinarySymbolicExpression
-			);
-			if (simplifiedWithConstant !== null) return simplifiedWithConstant;
-		}
-		if (simplifiedRight.kind === SymbolicExpressionKind.BINARY) {
-			const simplifiedWithConstant = this.simplifyDistributedMultiplication(
-				simplifiedLeft, simplifiedRight as BinarySymbolicExpression
-			);
-			if (simplifiedWithConstant !== null) return simplifiedWithConstant;
-		}
-		this.leftOperand = simplifiedLeft;
-		this.rightOperand = simplifiedRight;
-		return this;
-	}
-
-	simplifyExpressionWithConstant(
-		constant: ConstantSymbolicExpression, other: SymbolicExpression
-	): SymbolicExpression | null {
-		if (this.operator === "+" && constant.value === 0) return other;
-		if (this.operator === "*") {
-			if (constant.value === 0) return new ConstantSymbolicExpression(0);
-			if (constant.value === 1) return other;
-		}
-		return null;
-	}
-
-	simplifyDistributedMultiplication(
-		leftExpression: SymbolicExpression, rightExpression: BinarySymbolicExpression
-	): SymbolicExpression | null {
-		if (this.operator === '*') {
-			if (rightExpression.operator === '+' || rightExpression.operator === '-') {
-				return new BinarySymbolicExpression(
-					rightExpression.operator,
-					new BinarySymbolicExpression('*', leftExpression, rightExpression.leftOperand),
-					new BinarySymbolicExpression('*', leftExpression, rightExpression.rightOperand)
-				).trySimplify(true);
-			}
-		}
-		return null;
-	}
-
-	override get smtString(): string {
-		return (
-			`(${smtOperatorMap[this.operator] ?? this.operator} `
-			+ `${this.leftOperand.smtString} ${this.rightOperand.smtString})`
-		);
+		return {
+			expression: `(${smtOperator} `
+				+ `${shouldReverse ? rightSmt.expression : leftSmt.expression} `
+				+ `${shouldReverse ? leftSmt.expression : rightSmt.expression})`,
+			type: comparisonOperators.has(this.operator) ? BaseSymbolicType.BOOLEAN : leftSmt.type
+		};
 	}
 
 	override getChildExpressions(): SymbolicExpression[] {

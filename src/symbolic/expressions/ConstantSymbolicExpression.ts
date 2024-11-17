@@ -1,3 +1,6 @@
+import {formatSmtNumber, formatSmtString} from "#r/CommonUtils";
+import BaseSymbolicType from "#r/symbolic/BaseSymbolicType";
+
 import SymbolicExpression from "./SymbolicExpression.js";
 import SymbolicExpressionKind from "./SymbolicExpressionKind.js";
 
@@ -9,12 +12,22 @@ export default class ConstantSymbolicExpression extends SymbolicExpression {
 		this.value = value;
 	}
 
-	override get smtString(): string {
-		if (typeof this.value === "number") {
-			if (this.value < 0) return `(- ${formatNumber(-this.value)})`;
-			return formatNumber(this.value);
+	override generateSmt(): {expression: string, type: BaseSymbolicType} {
+		let expression: string;
+		switch (typeof this.value) {
+			case "number":
+				expression = formatSmtNumber(this.value);
+				break;
+			case "string":
+				expression = formatSmtString(this.value);
+				break;
+			case "boolean":
+				expression = this.value.toString();
+				break;
+			default:
+				throw new Error(`Unhandled constant value type ${typeof this.value}.`);
 		}
-		return this.value.toString();
+		return {expression, type: this.#getBaseType()};
 	}
 
 	override getChildExpressions(): SymbolicExpression[] {
@@ -24,9 +37,13 @@ export default class ConstantSymbolicExpression extends SymbolicExpression {
 	override clone(): SymbolicExpression {
 		return new ConstantSymbolicExpression(structuredClone(this.value));
 	}
-}
 
-function formatNumber(n: number): string {
-	const s = n.toString();
-	return s.indexOf('.') === -1 ? s + ".0" : s;
+	#getBaseType(): BaseSymbolicType {
+		switch (typeof this.value) {
+			case "number": return BaseSymbolicType.NUMBER;
+			case "string": return BaseSymbolicType.STRING;
+			case "boolean": return BaseSymbolicType.BOOLEAN;
+			default: throw new Error("Constant value is not of a supported type.");
+		}
+	}
 }

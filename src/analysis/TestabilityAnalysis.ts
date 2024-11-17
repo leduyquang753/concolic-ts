@@ -54,19 +54,17 @@ export default class TestabilityAnalysis {
 	}
 }
 
-function isPrimitiveType(type: Ts.Type): boolean {
-	return type.isString()
-		|| type.isNumber()
-		|| type.isBoolean()
-		|| type.isNull()
-		|| type.isUndefined()
-		|| type.isEnum()
-		|| type.isBigInt();
+function isSupportedPrimitiveType(type: Ts.Type): boolean {
+	return type.isString() || type.isStringLiteral()
+		|| type.isNumber() || type.isNumberLiteral()
+		|| type.isBoolean() || type.isBooleanLiteral();
 }
 
 function isValidType(type: Ts.Type): boolean {
-	if (isPrimitiveType(type)) return true;
+	if (isSupportedPrimitiveType(type)) return true;
 	//if (type.isArray()) return isValidType(type.getArrayElementType() as Ts.Type);
+	if (type.isUnion()) return type.getUnionTypes().every(isSupportedPrimitiveType);
+	if (type.isIntersection()) return type.getIntersectionTypes().every(isSupportedPrimitiveType);
 	if (type.isObject() || type.isInterface()) return type.getProperties().every(
 		property => isValidType(property.getTypeAtLocation(property.getDeclarations()[0]))
 	);

@@ -434,7 +434,6 @@ export default class SymbolicExecutor {
 				break;
 			}
 			case Ts.SyntaxKind.SpreadAssignment: {
-				const spreadAssignment = element as Ts.SpreadAssignment;
 				const restObject = new ObjectSymbolicExpression({});
 				const restValue = restObject.value;
 				for (const [key, value] of Object.entries(source.value))
@@ -472,5 +471,5 @@ export default class SymbolicExecutor {
 }
 
 function makeVariableKey(name: string, tsNode: Ts.Node): string {
-	return `${tsNode.getStart()} ${name}`;
+	return `${tsNode.getSourceFile().getFilePath()}@${tsNode.getStart()} ${name}`;
 }

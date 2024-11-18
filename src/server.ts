@@ -8,7 +8,6 @@ import Fastify from "fastify";
 import * as FileSystem from "fs";
 import * as Path from "path";
 import {Shescape} from "shescape";
-import * as StreamPromises from "stream/promises";
 import * as Ts from "ts-morph";
 
 import type {ResolvedFunctionPath} from "#r/analysis/FunctionResolver";
@@ -320,7 +319,7 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 			await new CodeTransformer(originalPath, concolicPath, coverageKind, func.mockedFunctions).transform();
 			const project = new Ts.Project({tsConfigFilePath: Path.join(concolicPath, "tsconfig.json")});
 			const {testCases, testDriver, coverage, time} = await new Executor(
-				concolicPath, project, func.filePath, func.functionName,
+				concolicPath, project, {source: func.filePath, container: null, name: func.functionName},
 				func.concolicDriverTemplate, func.testDriverTemplate,
 				coverageKind, params.coverageTarget, params.maxSearchDepth, params.maxContextSize, params.timeLimit
 			).execute((currentTestCount, currentCoverage) => {

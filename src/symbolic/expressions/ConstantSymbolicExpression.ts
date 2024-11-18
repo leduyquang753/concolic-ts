@@ -1,5 +1,5 @@
-import {formatSmtNumber, formatSmtString} from "#r/CommonUtils";
 import BaseSymbolicType from "#r/symbolic/BaseSymbolicType";
+import {formatSmtNumber, formatSmtString} from "#r/utilities/SmtUtils";
 
 import SymbolicExpression from "./SymbolicExpression.js";
 import SymbolicExpressionKind from "./SymbolicExpressionKind.js";

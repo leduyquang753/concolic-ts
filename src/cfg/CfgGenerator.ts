@@ -1,6 +1,5 @@
 import * as Ts from "ts-morph";
 
-import CoverageKind from "#r/execution/CoverageKind";
 import symbolicBuiltinClasses from "#r/symbolic/builtins/SymbolicBuiltins";
 import type {Cfg} from "./Cfg.js";
 import CfgNode from "./CfgNode.js";

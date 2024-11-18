@@ -8,7 +8,8 @@ import * as Ts from "ts-morph";
 import * as Url from "url";
 
 import config from "#r/config";
-import {formatSmtNumber, formatSmtString, parseSmtString} from "#r/CommonUtils";
+import type {ResolvedFunctionPath} from "#r/analysis/FunctionResolver";
+import {makeResolvedFunctionPathKey, resolveCalledExpression} from "#r/analysis/FunctionResolver";
 import type {Cfg} from "#r/cfg/Cfg";
 import {compactCfg, iterateCfg} from "#r/cfg/Cfg";
 import type CfgNode from "#r/cfg/CfgNode";
@@ -20,6 +21,7 @@ import SymbolicExpression from "#r/symbolic/expressions/SymbolicExpression";
 import SymbolicExpressionKind from "#r/symbolic/expressions/SymbolicExpressionKind";
 import UnarySymbolicExpression from "#r/symbolic/expressions/UnarySymbolicExpression";
 import VariableSymbolicExpression from "#r/symbolic/expressions/VariableSymbolicExpression";
+import {formatSmtNumber, formatSmtString, parseSmtString} from "#r/utilities/SmtUtils";
 
 import type {ExecutionEntry} from "./BranchSelector.js";
 import BranchSelector from "./BranchSelector.js";
@@ -28,7 +30,8 @@ import {getBreakpointsFromCfg} from "./Breakpoints.js";
 import CoverageKind from "./CoverageKind.js";
 import DebuggerWebsocket from "./DebuggerWebsocket.js";
 
-type FunctionData = {cfg: Cfg, breakpoints: Breakpoint[]};
+type SourceFileData = {compiledPath: string, sourceMap: SourceMapConsumer};
+type FunctionData = {declaration: Ts.FunctionDeclaration, cfg: Cfg, breakpoints: Breakpoint[]};
 export type ParameterType = {baseType: BaseSymbolicType, literalValues: any[], literalOnly: boolean};
 export type MockedCall = {key: string, value: string};
 type InternalMockedCall = MockedCall & {parameterNames: Set<string>};
@@ -38,17 +41,15 @@ export default class Executor {
 	#projectPath: string;
 	#project: Ts.Project;
 	#projectConfiguration: Ts.ts.ParsedCommandLine;
-	#sourceFilePath: string;
-	#sourceFile: Ts.SourceFile;
-	#functionNameToTest: string;
+	#functionToTest: ResolvedFunctionPath;
 	#concolicDriverTemplate: string;
 	#testDriverTemplate: string;
-	#mockedFunctionKeys: Set<string> = new Set<string>();
 	#coverageKind: CoverageKind;
 	#coverageTarget: number;
 	#timeLimit: number;
 
-	#functionDataMap: {[name: string]: FunctionData | undefined} = {};
+	#sourceFileDataMap: Map<string, SourceFileData> = new Map<string, SourceFileData>();
+	#functionDataMap: Map<string, FunctionData> = new Map<string, FunctionData>();
 	#topLevelParameterNames: string[] = [];
 	#parameterNames: Set<string> = new Set<string>();
 	#parameterInfo: Map<string, ParameterType> = new Map<string, ParameterType>();
@@ -61,7 +62,7 @@ export default class Executor {
 	#totalCoverageAmount: number = 0;
 
 	constructor(
-		projectPath: string, project: Ts.Project, sourceFilePath: string, functionNameToTest: string,
+		projectPath: string, project: Ts.Project, functionToTest: ResolvedFunctionPath,
 		concolicDriverTemplate: string, testDriverTemplate: string,
 		coverageKind: CoverageKind, coverageTarget: number, maxSearchDepth: number, maxContextLength: number,
 		timeLimit: number
@@ -71,9 +72,7 @@ export default class Executor {
 		this.#projectConfiguration = Ts.ts.getParsedCommandLineOfConfigFile(
 			Path.join(this.#projectPath, "tsconfig.json"), undefined, Ts.ts.sys as any
 		)!;
-		this.#sourceFilePath = sourceFilePath;
-		this.#sourceFile = project.getSourceFileOrThrow(sourceFilePath);
-		this.#functionNameToTest = functionNameToTest;
+		this.#functionToTest = functionToTest;
 		this.#concolicDriverTemplate = concolicDriverTemplate;
 		this.#testDriverTemplate = testDriverTemplate;
 		this.#coverageKind = coverageKind;
@@ -86,7 +85,7 @@ export default class Executor {
 	async execute(progressCallback: (testCount: number, coverage: number) => void): Promise<{
 		testCases: TestCase[], testDriver: string, coverage: number, time: number
 	}> {
-		const cfg = this.#getFunctionData(this.#functionNameToTest).cfg;
+		const cfg = this.#getFunctionData(this.#functionToTest).cfg;
 		if (this.#coverageKind === CoverageKind.STATEMENT) {
 			for (const node of iterateCfg(cfg)) this.#totalCoverageAmount
 				+= node.primaryStatementCount
@@ -103,7 +102,8 @@ export default class Executor {
 			let parameterIndex = 0;
 			for (
 				const parameterDeclaration
-				of this.#sourceFile.getFunctionOrThrow(this.#functionNameToTest).getParameters()
+				of this.#project.getSourceFileOrThrow(this.#functionToTest.source)
+				.getFunctionOrThrow(this.#functionToTest.name).getParameters()
 			) {
 				const nameNode = parameterDeclaration.getNameNode();
 				const topLevelParameterName
@@ -134,14 +134,14 @@ export default class Executor {
 		}
 		console.log("Done.");
 		const globalDriverVariables = {
-			sourceFilePath: this.#sourceFilePath.replace(/\.ts$/, ""),
-			functionName: this.#functionNameToTest
+			sourceFilePath: this.#functionToTest.source.replace(/\.ts$/, ""),
+			functionName: this.#functionToTest.name
 		};
 		return {
 			testCases,
 			testDriver: TemplateFile.render(this.#testDriverTemplate, {
 				...globalDriverVariables,
-				testCases: testCases.map(testCase => {
+				testCases: testCases.map((testCase, index) => {
 					const mockedValues: any = {};
 					for (const call of testCase.mockedValues) {
 						if (!(call.key in mockedValues)) mockedValues[call.key] = [];
@@ -149,6 +149,7 @@ export default class Executor {
 					}
 					return {
 						...globalDriverVariables,
+						index: index + 1,
 						params: testCase.parameters.map(arg => arg.value).join(", "),
 						mockedValues: JSON.stringify(mockedValues)
 					};
@@ -163,9 +164,6 @@ export default class Executor {
 		mockedCalls: InternalMockedCall[],
 		newValues: {input: any, mockedCalls: InternalMockedCall[]} | null
 	}> {
-		const sourceFilePath = this.#sourceFile.getFilePath();
-		const compiledFilePath = this.#getCompiledFilePath(sourceFilePath);
-
 		console.log("Starting debugger...");
 		const process = ChildProcess.spawn("node", [
 			`--inspect-brk=${config.debuggerPort}`, "--enable-source-maps",
@@ -201,53 +199,24 @@ export default class Executor {
 		const websocket = new DebuggerWebsocket(debuggerUrl);
 		await websocket.waitForConnection();
 		console.log("Connected to the debugger.");
-		let scriptId = "";
-		let callFrameId = "";
-		let sourceMapPath = "";
-		let scriptParsed = false;
-		{
-			const scriptUrl = Url.pathToFileURL(compiledFilePath).toString();
-			const eventListener = (rawData: any): void => {
-				const data = rawData as {scriptId: string, url: string, sourceMapURL: string};
-				if (data.url === scriptUrl) {
-					scriptId = data.scriptId;
-					sourceMapPath = data.sourceMapURL;
-					scriptParsed = true;
-					websocket.removeListener("Debugger.scriptParsed", eventListener);
-				}
-			};
-			websocket.on("Debugger.scriptParsed", eventListener);
-		}
 		websocket.sendCommand("Runtime.enable");
 		await websocket.getCommandResponse();
 		websocket.sendCommand("Debugger.enable");
 		await websocket.getCommandResponse();
 		websocket.sendCommand("Runtime.runIfWaitingForDebugger");
 		await websocket.waitForEvent("Debugger.paused");
-		while (!scriptParsed) {
-			websocket.sendCommand("Debugger.stepOver");
-			callFrameId = (await websocket.waitForEvent("Debugger.paused")).callFrames[0].callFrameId;
-		}
-		websocket.sendCommand("Debugger.evaluateOnCallFrame", {
-			callFrameId, expression: "globalThis.__concolic$mockedValues = []"
-		});
+		websocket.sendCommand("Runtime.evaluate", {expression: "globalThis.__concolic$mockedValues = []"});
 		await websocket.getCommandResponse();
-		const sourceMapConsumer = await new SourceMapConsumer(
-			FileSystem.readFileSync(Path.join(Path.dirname(compiledFilePath), sourceMapPath), "utf8")
-		);
-		const sourceMapSourcePath = Path.relative(Path.dirname(compiledFilePath), sourceFilePath).replaceAll('\\', '/');
 		const breakpointMap: {[id: string]: Breakpoint} = {};
 		const functionsWithSetBreakpoints = new Set<string>();
-		for (const functionDeclaration of this.#sourceFile.getFunctions()) await this.#setBreakpoints(
-			functionDeclaration.getName()!, functionsWithSetBreakpoints,
-			scriptId, sourceMapConsumer, sourceMapSourcePath, websocket, breakpointMap
-		);
+		await this.#setBreakpoints(this.#functionToTest, functionsWithSetBreakpoints, websocket, breakpointMap);
 		console.log("Set initial breakpoints, now running.");
 
-		const functionToTest = this.#sourceFile.getFunctionOrThrow(this.#functionNameToTest);
+		const functionToTest = this.#project.getSourceFileOrThrow(this.#functionToTest.source)
+			.getFunctionOrThrow(this.#functionToTest.name);
 		const symbolicExecutor = new SymbolicExecutor(this.#parameterInfo);
 		symbolicExecutor.addParametersFromFunctionDeclaration(functionToTest);
-		let cfg = this.#getFunctionData(this.#functionNameToTest).cfg;
+		let cfg = this.#getFunctionData(this.#functionToTest).cfg;
 		let currentCfgNode: CfgNode = cfg.beginNode.primaryNext!;
 		let currentCodeNode = functionToTest.getBody()!;
 		let pendingCallCfgNodes: CfgNode[] = [];
@@ -283,8 +252,7 @@ export default class Executor {
 					) {
 						const callExpression = callCfgNode.tsNode! as Ts.CallExpression;
 						const calledExpression = callExpression.getExpression();
-						const functionName = calledExpression.getText();
-						if (functionName === "__concolic$mock") {
+						if (calledExpression.getText() === "__concolic$mock") {
 							const key = (callExpression.getArguments()[0] as Ts.StringLiteral).getLiteralValue();
 							if (currentMockedCallIndex === mockedCalls.length) {
 								const mockParameters = new Set<string>();
@@ -301,8 +269,7 @@ export default class Executor {
 							} else if (mockedCalls[currentMockedCallIndex].key !== key) {
 								throw new Error("Mocked call has unmatching key.");
 							}
-							websocket.sendCommand("Debugger.evaluateOnCallFrame", {
-								callFrameId,
+							websocket.sendCommand("Runtime.evaluate", {
 								expression: `globalThis.__concolic$mockedValues.push(${
 									mockedCalls[currentMockedCallIndex].value
 								})`
@@ -310,20 +277,23 @@ export default class Executor {
 							await websocket.getCommandResponse();
 							++currentMockedCallIndex;
 						} else {
-							const calledFunction = this.#sourceFile.getFunctionOrThrow(functionName);
+							const calledFunctionInfo = resolveCalledExpression(this.#projectPath, calledExpression);
+							if (calledFunctionInfo === null) throw new Error("Failed to resolve function call.");
+							const calledFunction = calledFunctionInfo.functionInProject;
+							if (calledFunction === null) throw new Error("Called function doesn't belong to project.");
 							symbolicExecutor.prepareFunctionCall(
 								calledFunction, callCfgNode.tsNode! as Ts.CallExpression
 							);
 							pendingCallCfgNodes.shift();
 							parentCalls.push({cfg, currentCfgNode, currentCodeNode, pendingCallCfgNodes});
-							parentCallPathStack.push(callExpression.getStart().toString());
-							parentCallPathString
-								= parentCallPathStack.join(' ') + (parentCallPathStack.length === 0 ? "" : " ");
-							await this.#setBreakpoints(
-								functionName, functionsWithSetBreakpoints,
-								scriptId, sourceMapConsumer, sourceMapSourcePath, websocket, breakpointMap
+							parentCallPathStack.push(
+								callExpression.getSourceFile().getFilePath() + '@' + callExpression.getStart()
 							);
-							cfg = this.#getFunctionData(functionName).cfg;
+							parentCallPathString = JSON.stringify(parentCallPathStack);
+							await this.#setBreakpoints(
+								calledFunctionInfo.path, functionsWithSetBreakpoints, websocket, breakpointMap
+							);
+							cfg = this.#getFunctionData(calledFunctionInfo.path).cfg;
 							currentCfgNode = cfg.beginNode.primaryNext!;
 							currentCodeNode = calledFunction.getBody()!;
 							pendingCallCfgNodes = [];
@@ -339,8 +309,7 @@ export default class Executor {
 					if (currentCfgNode !== cfg.endNode) throw new Error("Actual function call ended while CFG hasn't.");
 					({cfg, currentCfgNode, currentCodeNode, pendingCallCfgNodes} = parentCalls.pop()!);
 					parentCallPathStack.pop();
-					parentCallPathString
-						= parentCallPathStack.join(' ') + (parentCallPathStack.length === 0 ? "" : " ");
+					parentCallPathString = JSON.stringify(parentCallPathStack);
 					continue mainExecutionLoop;
 				}
 				currentCodeNode = next;
@@ -354,7 +323,6 @@ export default class Executor {
 				const event = await websocket.waitForAnyEvent();
 				if (event.method === "Debugger.paused") {
 					shouldResume = true;
-					callFrameId = event.params.callFrames[0].callFrameId;
 					const hitBreakpoint = breakpointMap[event.params.hitBreakpoints[0]];
 					if (hitBreakpoint.cfgNode === currentCfgNode) {
 						if (newExecutionPath.length < this.#currentExecutionPath.length) {
@@ -504,8 +472,8 @@ export default class Executor {
 		FileSystem.writeFileSync(
 			Path.join(this.#projectPath, "__concolic.ts"),
 			TemplateFile.render(this.#concolicDriverTemplate, {
-				sourceFilePath: this.#sourceFilePath.replace(/\.ts$/, ".js"),
-				functionName: this.#functionNameToTest,
+				sourceFilePath: this.#functionToTest.source.replace(/\.ts$/, ".js"),
+				functionName: this.#functionToTest.name,
 				params: this.#topLevelParameterNames.map(name => input[name]).join(", ")}
 			),
 			"utf8"
@@ -519,31 +487,44 @@ export default class Executor {
 		)[0];
 	}
 
-	#getFunctionData(functionName: string): FunctionData {
-		let functionData = this.#functionDataMap[functionName];
+	#getFunctionData(functionPath: ResolvedFunctionPath): FunctionData {
+		const key = makeResolvedFunctionPathKey(functionPath);
+		let functionData = this.#functionDataMap.get(key);
 		if (functionData === undefined) {
-			const cfg = generateCfgFromFunction(this.#sourceFile.getFunctionOrThrow(functionName));
+			const declaration
+				= this.#project.getSourceFileOrThrow(functionPath.source).getFunctionOrThrow(functionPath.name);
+			const cfg = generateCfgFromFunction(declaration);
 			compactCfg(cfg);
-			functionData = {cfg, breakpoints: getBreakpointsFromCfg(cfg)};
-			this.#functionDataMap[functionName] = functionData;
+			functionData = {declaration, cfg, breakpoints: getBreakpointsFromCfg(cfg)};
+			this.#functionDataMap.set(key, functionData);
 			this.#branchSelector.addCfg(cfg);
 		}
 		return functionData;
 	}
 
 	async #setBreakpoints(
-		functionName: string, setFunctions: Set<string>,
-		scriptId: string, sourceMapConsumer: SourceMapConsumer, sourceMapSourcePath: string,
+		functionPath: ResolvedFunctionPath, setFunctions: Set<string>,
 		websocket: DebuggerWebsocket, breakpointMap: {[id: string]: Breakpoint}
 	): Promise<void> {
-		if (setFunctions.has(functionName)) return;
-		setFunctions.add(functionName);
-		for (const breakpoint of this.#getFunctionData(functionName).breakpoints) {
-			const compiledLocation = sourceMapConsumer.generatedPositionFor({
+		const key = makeResolvedFunctionPathKey(functionPath);
+		if (setFunctions.has(key)) return;
+		setFunctions.add(key);
+		const sourceFilePath = this.#project.getSourceFileOrThrow(functionPath.source).getFilePath();
+		const compiledPath = this.#getCompiledFilePath(sourceFilePath);
+		const compiledUrl = Url.pathToFileURL(compiledPath).toString();
+		const sourceMapSourcePath = Path.relative(Path.dirname(compiledPath), sourceFilePath).replaceAll('\\', '/');
+		let sourceFileData = this.#sourceFileDataMap.get(functionPath.source);
+		if (sourceFileData === undefined) {
+			const sourceMap = await new SourceMapConsumer(FileSystem.readFileSync(compiledPath + ".map", "utf8"));
+			sourceFileData = {compiledPath, sourceMap};
+			this.#sourceFileDataMap.set(functionPath.source, sourceFileData);
+		}
+		for (const breakpoint of this.#getFunctionData(functionPath).breakpoints) {
+			const compiledLocation = sourceFileData.sourceMap.generatedPositionFor({
 				source: sourceMapSourcePath, line: breakpoint.line, column: breakpoint.column - 1
 			});
-			websocket.sendCommand("Debugger.setBreakpoint", {
-				location: {scriptId, lineNumber: compiledLocation.line! - 1, columnNumber: compiledLocation.column}
+			websocket.sendCommand("Debugger.setBreakpointByUrl", {
+				url: compiledUrl, lineNumber: compiledLocation.line! - 1, columnNumber: compiledLocation.column
 			});
 			breakpointMap[(await websocket.getCommandResponse()).breakpointId as string] = breakpoint;
 		}

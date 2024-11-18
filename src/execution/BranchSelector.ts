@@ -1,7 +1,6 @@
 import type {Cfg} from "#r/cfg/Cfg";
 import {iterateCfg} from "#r/cfg/Cfg";
 import type CfgNode from "#r/cfg/CfgNode";
-import CfgNodeKind from "#r/cfg/CfgNodeKind";
 import SymbolicExpression from "#r/symbolic/expressions/SymbolicExpression";
 
 export type ExecutionEntry = {

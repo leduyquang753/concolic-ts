@@ -1,6 +1,5 @@
 import BaseSymbolicType from "#r/symbolic/BaseSymbolicType";
 
-import ConstantSymbolicExpression from "./ConstantSymbolicExpression.js";
 import SymbolicExpression from "./SymbolicExpression.js";
 import SymbolicExpressionKind from "./SymbolicExpressionKind.js";
 

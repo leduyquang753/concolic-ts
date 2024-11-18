@@ -1,0 +1,16 @@
+import {test as __concolic$test, afterEach, describe, vi} from "vitest";
+
+import { {{functionName}} } from {{sourceFilePath}};
+{{automockImports}}
+
+describe("Concolic tests", () => {
+	afterEach(() => { vi.restoreAllMocks(); });
+
+	{{#testCases}}
+	__concolic$test("Concolic test {{index}}", () => {
+		const mockedValues = {{mockedValues}};
+		{{automock}}
+		{{functionName}}({{params}});
+	});
+	{{/testCases}}
+});

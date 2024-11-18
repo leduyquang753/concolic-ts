@@ -1,0 +1,3 @@
+import { {{functionName}} } from {{sourceFilePath}};
+
+{{functionName}}({{params}});

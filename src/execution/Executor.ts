@@ -150,7 +150,7 @@ export default class Executor {
 			automockModuleMap.set(path.source + '|' + (path.container ?? ""), automockName);
 		}
 		const globalDriverVariables = {
-			sourceFilePath: JSON.stringify("./" + this.#functionToTest.source.replace(/\.ts$/, "")),
+			sourceFilePath: JSON.stringify("./" + this.#functionToTest.source.replace(/\.ts$/, ".js")),
 			functionName: this.#functionToTest.name,
 			automockImports
 		};
@@ -502,7 +502,7 @@ export default class Executor {
 		FileSystem.writeFileSync(
 			Path.join(this.#projectPath, "__concolic.ts"),
 			TemplateFile.render(this.#concolicDriverTemplate, {
-				sourceFilePath: this.#functionToTest.source.replace(/\.ts$/, ".js"),
+				sourceFilePath: JSON.stringify("./" + this.#functionToTest.source.replace(/\.ts$/, ".js")),
 				functionName: this.#functionToTest.name,
 				params: this.#topLevelParameterNames.map(name => input[name]).join(", ")}
 			),

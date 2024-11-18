@@ -209,23 +209,19 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 	properties: {
 		functionsToTest: {type: "array", items: {
 			type: "object",
-			required: [
-				"filePath", "functionName",
-				"concolicDriverTemplate", "testDriverTemplate",
-				"mockedFunctions"
-			],
+			required: ["filePath", "functionName"],
 			properties: {
-				filePath: {type: "string"},
-				functionName: {type: "string"},
+				filePath: {type: "string", minLength: 1},
+				functionName: {type: "string", minLength: 1},
 				concolicDriverTemplate: {type: "string"},
 				testDriverTemplate: {type: "string"},
 				mockedFunctions: {type: "array", items: {
 					type: "object",
 					required: ["source", "container", "name"],
 					properties: {
-						source: {type: "string"},
-						container: {anyOf: [{type: "string"}, {type: "null"}]},
-						name: {type: "string"}
+						source: {type: "string", minLength: 1},
+						container: {anyOf: [{type: "string", minLength: 1}, {type: "null"}]},
+						name: {type: "string", minLength: 1}
 					}
 				}}
 			}
@@ -250,8 +246,8 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 	const params = request.body as {
 		functionsToTest: {
 			filePath: string, functionName: string,
-			concolicDriverTemplate: string, testDriverTemplate: string,
-			mockedFunctions: ResolvedFunctionPath[]
+			concolicDriverTemplate: string | undefined, testDriverTemplate: string | undefined,
+			mockedFunctions: ResolvedFunctionPath[] | undefined
 		}[],
 		coverageKind: "statement" | "branch" | "predicate",
 		coverageTarget: number,
@@ -316,11 +312,18 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 				= `Generating for function ${functionNumber} / ${params.functionsToTest.length}:\n`
 				+ `${func.functionName} | ${func.filePath}\n`;
 			statusStore.updateTaskProgress(functionProgressString + "Transforming code...");
-			await new CodeTransformer(originalPath, concolicPath, coverageKind, func.mockedFunctions).transform();
+			const mockedFunctions = func.mockedFunctions ?? [];
+			await new CodeTransformer(originalPath, concolicPath, coverageKind, mockedFunctions).transform();
 			const project = new Ts.Project({tsConfigFilePath: Path.join(concolicPath, "tsconfig.json")});
 			const {testCases, testDriver, coverage, time} = await new Executor(
 				concolicPath, project, {source: func.filePath, container: null, name: func.functionName},
-				func.concolicDriverTemplate, func.testDriverTemplate, func.mockedFunctions,
+				func.concolicDriverTemplate ?? FileSystem.readFileSync(
+					Path.join(config.defaultsPath, "concolicDriverTemplate.ts.txt"), "utf8"
+				),
+				func.testDriverTemplate ?? FileSystem.readFileSync(
+					Path.join(config.defaultsPath, "testDriverTemplate.ts.txt"), "utf8"
+				),
+				mockedFunctions,
 				coverageKind, params.coverageTarget, params.maxSearchDepth, params.maxContextSize, params.timeLimit
 			).execute((currentTestCount, currentCoverage) => {
 				statusStore.updateTaskProgress(

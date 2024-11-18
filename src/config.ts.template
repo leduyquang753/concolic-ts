@@ -2,8 +2,8 @@ const config = {
 	pathToZ3: "<Path to the Z3 executable.>",
 	serverPort: 4000,
 	debuggerPort: 9339,
-	concolicProjectPath: "<Path to the project.>",
-	testProjectPath: "<Path to the project.>"
+	storagePath: "<Path to project storage.>",
+	defaultsPath: "<Path to default files.>"
 };
 
 export default config;

@@ -219,10 +219,10 @@ export default class SymbolicExecutor {
 					Ts.Node.isVariableDeclaration
 				);
 				if (declaration === undefined) throw new Error("External variable declaration not found.");
-				if ((
-					declaration.getParentOrThrow().getParentOrThrow().getParentOrThrow() as Ts.VariableStatement
-				).getDeclarationKind() !== Ts.VariableDeclarationKind.Const)
-					throw new Error("Non-`const` external variables are not yet supported.");
+				if (
+					(declaration.getParentOrThrow().getParentOrThrow() as Ts.VariableStatement).getDeclarationKind()
+					!== Ts.VariableDeclarationKind.Const
+				) throw new Error("Non-`const` external variables are not yet supported.");
 				return this.evaluateExpression(declaration.getInitializerOrThrow(), false, true);
 			case Ts.SyntaxKind.PropertyAccessExpression: {
 				const propertyAccessExpression = (expression as Ts.PropertyAccessExpression);

@@ -63,8 +63,8 @@ function isSupportedPrimitiveType(type: Ts.Type): boolean {
 function isValidType(type: Ts.Type): boolean {
 	if (isSupportedPrimitiveType(type)) return true;
 	//if (type.isArray()) return isValidType(type.getArrayElementType() as Ts.Type);
-	if (type.isUnion()) return type.getUnionTypes().every(isSupportedPrimitiveType);
-	if (type.isIntersection()) return type.getIntersectionTypes().every(isSupportedPrimitiveType);
+	if (type.isUnion()) return type.getUnionTypes().every(isValidType);
+	if (type.isIntersection()) return type.getIntersectionTypes().every(isValidType);
 	if (type.isObject() || type.isInterface()) return type.getProperties().every(
 		property => isValidType(property.getTypeAtLocation(property.getDeclarations()[0]))
 	);

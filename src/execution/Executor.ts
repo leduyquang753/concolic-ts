@@ -460,7 +460,7 @@ export default class Executor {
 				return [name, value];
 			}));
 			for (const parameterName of this.#parameterNames) if (!usedParameters.has(parameterName))
-				flatInputObject[parameterName] = Math.floor(Math.random() * 201) - 100;
+				flatInputObject[parameterName] = generateRandomValue(this.#parameterInfo.get(parameterName)!);
 			let usedMockedCalls = 0;
 			for (let i = mockedCalls.length - 1; i !== -1; --i) {
 				const mockedCall = mockedCalls[i];
@@ -473,7 +473,7 @@ export default class Executor {
 				}
 				for (const parameterName of mockedCall.parameterNames) {
 					if (!usedParameters.has(parameterName))
-						flatInputObject[parameterName] = Math.floor(Math.random() * 201) - 100;
+						flatInputObject[parameterName] = generateRandomValue(this.#parameterInfo.get(parameterName)!);
 				}
 			}
 			const newInput = buildInputObject(flatInputObject);
@@ -508,7 +508,9 @@ export default class Executor {
 			),
 			"utf8"
 		);
-		ChildProcess.execSync("tsc", {cwd: this.#projectPath, stdio: "ignore"});
+		ChildProcess.execSync(
+			"tsc --sourceMap true --inlineSourceMap false", {cwd: this.#projectPath, stdio: "ignore"}
+		);
 	}
 
 	#getCompiledFilePath(sourceFilePath: string): string {

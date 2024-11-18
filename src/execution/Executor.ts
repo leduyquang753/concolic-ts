@@ -44,6 +44,7 @@ export default class Executor {
 	#functionToTest: ResolvedFunctionPath;
 	#concolicDriverTemplate: string;
 	#testDriverTemplate: string;
+	#mockedFunctions: ResolvedFunctionPath[];
 	#coverageKind: CoverageKind;
 	#coverageTarget: number;
 	#timeLimit: number;
@@ -63,7 +64,7 @@ export default class Executor {
 
 	constructor(
 		projectPath: string, project: Ts.Project, functionToTest: ResolvedFunctionPath,
-		concolicDriverTemplate: string, testDriverTemplate: string,
+		concolicDriverTemplate: string, testDriverTemplate: string, mockedFunctions: ResolvedFunctionPath[],
 		coverageKind: CoverageKind, coverageTarget: number, maxSearchDepth: number, maxContextLength: number,
 		timeLimit: number
 	) {
@@ -75,6 +76,7 @@ export default class Executor {
 		this.#functionToTest = functionToTest;
 		this.#concolicDriverTemplate = concolicDriverTemplate;
 		this.#testDriverTemplate = testDriverTemplate;
+		this.#mockedFunctions = mockedFunctions;
 		this.#coverageKind = coverageKind;
 		this.#coverageTarget = coverageTarget / 100;
 		this.#timeLimit = timeLimit * 1000;
@@ -133,9 +135,24 @@ export default class Executor {
 			else ({input, mockedCalls: newMockedCalls} = newValues);
 		}
 		console.log("Done.");
+		let automockImports = "";
+		const automockModuleMap = new Map<string, string>();
+		let automockModuleNumber = 0;
+		for (const path of this.#mockedFunctions) if (!path.source.startsWith("/node_modules/")) {
+			++automockModuleNumber;
+			const automockName = `__concolic$automock${automockModuleNumber}`;
+			const automockSource = JSON.stringify("./" + path.source);
+			if (automockImports.length !== 0) automockImports += '\n';
+			if (path.container === null)
+				automockImports += `import * as ${automockName} from ${automockSource};`;
+			else
+				automockImports += `import ${path.container} as ${automockName} from ${automockSource};`;
+			automockModuleMap.set(path.source + '|' + (path.container ?? ""), automockName);
+		}
 		const globalDriverVariables = {
-			sourceFilePath: this.#functionToTest.source.replace(/\.ts$/, ""),
-			functionName: this.#functionToTest.name
+			sourceFilePath: JSON.stringify("./" + this.#functionToTest.source.replace(/\.ts$/, "")),
+			functionName: this.#functionToTest.name,
+			automockImports
 		};
 		return {
 			testCases,
@@ -143,15 +160,28 @@ export default class Executor {
 				...globalDriverVariables,
 				testCases: testCases.map((testCase, index) => {
 					const mockedValues: any = {};
+					let automockCode = "";
 					for (const call of testCase.mockedValues) {
 						if (!(call.key in mockedValues)) mockedValues[call.key] = [];
 						mockedValues[call.key].push(JSON.parse(call.value));
+						const path = call.key.split('|');
+						if (automockCode.length !== 0) automockCode += '\n';
+						automockCode += `{ const mock = vi.spyOn(${
+							path[0].startsWith("/node_modules/")
+							? path[1]
+							: automockModuleMap.get(path[0] + '|' + path[1])!
+						}, ${
+							JSON.stringify(path[2])
+						}); for (const value of mockedValues[${
+							JSON.stringify(call.key)
+						}]) mock.mockReturnValueOnce(value); }`;
 					}
 					return {
 						...globalDriverVariables,
 						index: index + 1,
 						params: testCase.parameters.map(arg => arg.value).join(", "),
-						mockedValues: JSON.stringify(mockedValues)
+						mockedValues: JSON.stringify(mockedValues),
+						automock: automockCode
 					};
 				})
 			}),
@@ -635,7 +665,9 @@ function getExpressionNode(tsNode: Ts.Node): Ts.Expression | null {
 		case Ts.SyntaxKind.VariableDeclaration:
 			return (tsNode as Ts.VariableDeclaration).getInitializer() ?? null;
 		case Ts.SyntaxKind.ExpressionStatement:
-			return (tsNode as Ts.ExpressionStatement).getExpression();
+		case Ts.SyntaxKind.IfStatement:
+		case Ts.SyntaxKind.WhileStatement:
+			return (tsNode as Ts.ExpressionStatement | Ts.IfStatement | Ts.WhileStatement).getExpression();
 		case Ts.SyntaxKind.ReturnStatement:
 			return (tsNode as Ts.ReturnStatement).getExpression() ?? null;
 		default:

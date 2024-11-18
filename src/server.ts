@@ -320,7 +320,7 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 			const project = new Ts.Project({tsConfigFilePath: Path.join(concolicPath, "tsconfig.json")});
 			const {testCases, testDriver, coverage, time} = await new Executor(
 				concolicPath, project, {source: func.filePath, container: null, name: func.functionName},
-				func.concolicDriverTemplate, func.testDriverTemplate,
+				func.concolicDriverTemplate, func.testDriverTemplate, func.mockedFunctions,
 				coverageKind, params.coverageTarget, params.maxSearchDepth, params.maxContextSize, params.timeLimit
 			).execute((currentTestCount, currentCoverage) => {
 				statusStore.updateTaskProgress(

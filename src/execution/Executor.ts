@@ -127,7 +127,7 @@ export default class Executor {
 			this.#generateDriverScript(input);
 			const oldCoveredAmount = this.#coveredAmount;
 			const {mockedCalls, newValues} = await this.#executeFunctionAndGetNextInput(newMockedCalls);
-			if (this.#coveredAmount !== oldCoveredAmount) testCases.push({
+			if (testCases.length === 0 || this.#coveredAmount !== oldCoveredAmount) testCases.push({
 				parameters: this.#topLevelParameterNames.map(name => ({name, value: input[name]})),
 				mockedValues: mockedCalls.map(call => ({key: call.key, value: call.value}))
 			});
@@ -201,6 +201,10 @@ export default class Executor {
 		], {cwd: this.#projectPath, stdio: "pipe"});
 		process.stdout!.on("data", data => {});
 		process.stderr!.on("data", data => {});
+		let shouldKill = true;
+
+		try {
+
 		const debuggerUrl = await new Promise<string>((resolve, reject) => {
 			let failureCount = 0;
 			const routine = () => {
@@ -393,6 +397,7 @@ export default class Executor {
 			}
 		}
 		websocket.close();
+		shouldKill = false;
 		console.log("Finished execution.");
 		console.log("Branching series: " + newExecutionPath.map(e => e.isSecondaryBranch ? '0' : '1').join(" "));
 		if (
@@ -412,13 +417,20 @@ export default class Executor {
 			);
 			const usedParameters = new Set<string>();
 			for (const condition of conditions) collectUsedParametersFromCondition(condition, usedParameters);
-			let smtString = "(set-option :pp.decimal true)\n";
+			let smtString = "(set-option :pp.decimal true)\n(set-option :pp.decimal_precision 20)\n";
 			let constraintsHaveStrings = false;
 			for (const parameter of usedParameters) {
 				smtString += generateSmtForParameter(parameter, this.#parameterInfo);
 				constraintsHaveStrings ||= this.#parameterInfo.get(parameter)!.baseType === BaseSymbolicType.STRING;
 			}
-			for (const condition of conditions) smtString += `(assert ${condition.generateSmt().expression})\n`;
+			{
+				let remainingConstraints = [...conditions];
+				while (remainingConstraints.length !== 0) {
+					const constraint = remainingConstraints.shift()!;
+					smtString += `(assert ${constraint.generateSmt().expression})\n`;
+					remainingConstraints.push(...constraint.getAdditionalConstraints());
+				}
+			}
 			smtString += (
 				(constraintsHaveStrings ? "(check-sat)" : "(check-sat-using qfnra-nlsat)")
 				+ "\n(get-model)\n"
@@ -490,6 +502,8 @@ export default class Executor {
 			}
 			return {mockedCalls, newValues: {input: newInput, mockedCalls: newMockedCalls}};
 		}
+
+		} finally { if (shouldKill) process.kill(); }
 	}
 
 	#increaseCoveredAmount(cfgNode: CfgNode, isSecondaryBranch: boolean): void {

@@ -1,5 +1,6 @@
 import BaseSymbolicType from "#r/symbolic/BaseSymbolicType";
 
+import ConstantSymbolicExpression from "./ConstantSymbolicExpression.js";
 import SymbolicExpression from "./SymbolicExpression.js";
 import SymbolicExpressionKind from "./SymbolicExpressionKind.js";
 
@@ -66,6 +67,12 @@ export default class BinarySymbolicExpression extends SymbolicExpression {
 				+ `${shouldReverse ? leftSmt.expression : rightSmt.expression})`,
 			type: comparisonOperators.has(this.operator) ? BaseSymbolicType.BOOLEAN : leftSmt.type
 		};
+	}
+
+	override getAdditionalConstraints(): SymbolicExpression[] {
+		if (this.operator === "/")
+			return [new BinarySymbolicExpression("!==", this.rightOperand, new ConstantSymbolicExpression(0))];
+		return [];
 	}
 
 	override getChildExpressions(): SymbolicExpression[] {

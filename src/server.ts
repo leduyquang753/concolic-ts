@@ -284,8 +284,12 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 			for (const func of params.functionsToTest) {
 				const sourceFile = originalProject.getSourceFile(Path.join(originalPath, func.filePath));
 				if (sourceFile === undefined) throw new Error(`Source file \`${func.filePath}\` not found.`);
-				if (sourceFile.getFunction(func.functionName) === undefined)
+				const functionDeclaration = sourceFile.getFunction(func.functionName);
+				if (functionDeclaration === undefined)
 					throw new Error(`Function \`${func.functionName}\` not found in source file \`${func.filePath}\`.`);
+				if (!functionDeclaration.isExported()) throw new Error(
+					`Function \`${func.functionName}\` in source file \`${func.filePath}\` is not testable.`
+				);
 			}
 		}
 

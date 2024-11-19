@@ -127,8 +127,8 @@ export default class CodeTransformer {
 				if (extractedCondition === null) break;
 				ifStatement.replaceWithText(ensureCodeBlock(
 					extractedCondition.precedingCode
-					+ `if (${extractedCondition.newExpression}) ${thenStatement.getText()}`
-					+ (elseStatement === undefined ? "\n" : ` else ${elseStatement.getText()}\n`),
+					+ `if (${extractedCondition.newExpression}) ${ifStatement.getThenStatement().getText()}`
+					+ (elseStatement === undefined ? "\n" : ` else ${ifStatement.getElseStatement()!.getText()}\n`),
 					isStandalone
 				));
 				break;
@@ -170,28 +170,27 @@ export default class CodeTransformer {
 				const incrementor = forStatement.getIncrementor();
 				const extractedIncrementor
 					= incrementor === undefined ? null : this.#extractConditionalExpression(incrementor);
-				if (extractedInitializer === null && extractedCondition === null && extractedIncrementor === null)
-					break;
 				let newCode = "";
-				const shouldMakeOuterBlock = extractedInitializer !== null || extractedCondition !== null;
+				const shouldMakeOuterBlock
+					= (extractedInitializer !== null || initializer !== null) || extractedCondition !== null
 				if (shouldMakeOuterBlock) newCode += "{\n";
-				if (extractedInitializer !== null) {
-					newCode += extractedInitializer;
-					newCode += "\n";
-				}
+				if (extractedInitializer !== null) newCode += extractedInitializer + '\n';
+				else if (initializer !== undefined) newCode += initializer.getText() + '\n';
 				if (extractedCondition !== null) {
 					newCode += extractedCondition.precedingCode;
 					newCode += `while (${extractedCondition.newExpression}) `;
 				} else {
 					newCode += `while (${condition === undefined ? "true" : condition.getText()}) `;
 				}
-				if (extractedIncrementor !== null) newCode += "{\n";
+				if (extractedIncrementor !== null || incrementor !== undefined) newCode += "{\n";
 				newCode += bodyStatement.getText();
 				newCode += "\n";
 				if (extractedIncrementor !== null) {
 					newCode += extractedIncrementor.precedingCode;
 					newCode += extractedIncrementor.newExpression;
 					newCode += ";\n}\n";
+				} else if (incrementor !== undefined) {
+					newCode += incrementor.getText() + "\n}\n";
 				}
 				if (shouldMakeOuterBlock) newCode += "}\n";
 				forStatement.replaceWithText(newCode);

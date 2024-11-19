@@ -9,6 +9,10 @@ abstract class SymbolicExpression {
 		this.kind = kind;
 	}
 
+	getAdditionalConstraints(): SymbolicExpression[] {
+		return [];
+	}
+
 	abstract generateSmt(): {expression: string, type: BaseSymbolicType};
 	abstract getChildExpressions(): SymbolicExpression[];
 	abstract clone(): SymbolicExpression;

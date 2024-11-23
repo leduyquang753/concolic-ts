@@ -175,7 +175,7 @@ export default class CodeTransformer {
 					= (extractedInitializer !== null || initializer !== null) || extractedCondition !== null
 				if (shouldMakeOuterBlock) newCode += "{\n";
 				if (extractedInitializer !== null) newCode += extractedInitializer + '\n';
-				else if (initializer !== undefined) newCode += initializer.getText() + '\n';
+				else if (initializer !== undefined) newCode += initializer.getText() + ';\n';
 				if (extractedCondition !== null) {
 					newCode += extractedCondition.precedingCode;
 					newCode += `while (${extractedCondition.newExpression}) `;
@@ -190,7 +190,7 @@ export default class CodeTransformer {
 					newCode += extractedIncrementor.newExpression;
 					newCode += ";\n}\n";
 				} else if (incrementor !== undefined) {
-					newCode += incrementor.getText() + "\n}\n";
+					newCode += incrementor.getText() + ";\n}\n";
 				}
 				if (shouldMakeOuterBlock) newCode += "}\n";
 				forStatement.replaceWithText(newCode);

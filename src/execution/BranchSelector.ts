@@ -101,7 +101,7 @@ export default class BranchSelector {
 		for (const [key, value] of dominatorMap) this.#dominatorMap.set(key, value);
 	}
 
-	getNextExecutionPath(): ExecutionEntry[] | null {
+	getNextExecutionPath(): {path: ExecutionEntry[], context: string} | null {
 		while (true) {
 			if (this.#currentNodes.length === 0) {
 				++this.#currentSearchDepth;
@@ -144,7 +144,6 @@ export default class BranchSelector {
 			if (this.#coveredContexts.has(context)) continue;
 
 			currentNode.isCovered = true;
-			this.#coveredContexts.add(context);
 			const executionPath: ExecutionEntry[] = [];
 			for (
 				let currentPathNode: ExecutionNode = currentNode;
@@ -158,8 +157,12 @@ export default class BranchSelector {
 			});
 			const lastEntry = executionPath.at(-1)!;
 			lastEntry.isSecondaryBranch = !lastEntry.isSecondaryBranch;
-			return executionPath;
+			return {path: executionPath, context};
 		}
+	}
+
+	markContextCovered(context: string): void {
+		this.#coveredContexts.add(context);
 	}
 
 	addExecutionPath(executionPath: ExecutionEntry[]): void {

@@ -105,7 +105,7 @@ export default class Executor {
 			let parameterIndex = 0;
 			for (
 				const parameterDeclaration
-				of this.#project.getSourceFileOrThrow(this.#functionToTest.source)
+				of this.#project.getSourceFileOrThrow(Path.join(this.#projectPath, this.#functionToTest.source))
 				.getFunctionOrThrow(this.#functionToTest.name).getParameters()
 			) {
 				const nameNode = parameterDeclaration.getNameNode();
@@ -198,7 +198,9 @@ export default class Executor {
 		console.log("Starting debugger...");
 		const process = ChildProcess.spawn("node", [
 			`--inspect-brk=${config.debuggerPort}`, "--enable-source-maps",
-			this.#getCompiledFilePath(this.#project.getSourceFileOrThrow("__concolic.ts").getFilePath())
+			this.#getCompiledFilePath(this.#project.getSourceFileOrThrow(
+				Path.join(this.#projectPath, "__concolic.ts")
+			).getFilePath())
 		], {cwd: this.#projectPath, stdio: "pipe"});
 		process.stdout!.on("data", data => {});
 		process.stderr!.on("data", data => {});
@@ -250,8 +252,9 @@ export default class Executor {
 		);
 		console.log("Set initial breakpoints, now running.");
 
-		const functionToTest = this.#project.getSourceFileOrThrow(this.#functionToTest.source)
-			.getFunctionOrThrow(this.#functionToTest.name);
+		const functionToTest = this.#project.getSourceFileOrThrow(
+			Path.join(this.#projectPath, this.#functionToTest.source)
+		).getFunctionOrThrow(this.#functionToTest.name);
 		const symbolicExecutor = new SymbolicExecutor(this.#parameterInfo);
 		symbolicExecutor.addParametersFromFunctionDeclaration(functionToTest);
 		let cfg = this.#getFunctionData(this.#functionToTest).cfg;
@@ -417,7 +420,7 @@ export default class Executor {
 			if (suggestedExecutionPath === null) return {mockedCalls, newValues: null};
 			console.log("Generating constraints...");
 			const conditions = [];
-			for (const entry of suggestedExecutionPath) conditions.push(
+			for (const entry of suggestedExecutionPath.path) conditions.push(
 				entry.isSecondaryBranch
 				? new UnarySymbolicExpression("!", entry.branchingCondition)
 				: entry.branchingCondition
@@ -464,7 +467,8 @@ export default class Executor {
 			} else if (smtResult.substring(0, 3) !== "sat") {
 				throw new Error("Failed to solve constraints.");
 			}
-			this.#currentExecutionPath = suggestedExecutionPath;
+			this.#branchSelector.markContextCovered(suggestedExecutionPath.context);
+			this.#currentExecutionPath = suggestedExecutionPath.path;
 			const flatInputObject = Object.fromEntries([...smtResult.matchAll(
 				/\(define-fun ([\w_.@$]+) \(\) (?:Real[^\d\(]+\(?((?:- )?[\d\.]+)\??|String[^"]+"([^"]*)"|Bool[^\w]+(\w+))\)/g
 			)].map(entry => {
@@ -551,8 +555,9 @@ export default class Executor {
 		const key = makeResolvedFunctionPathKey(functionPath);
 		let functionData = this.#functionDataMap.get(key);
 		if (functionData === undefined) {
-			const declaration
-				= this.#project.getSourceFileOrThrow(functionPath.source).getFunctionOrThrow(functionPath.name);
+			const declaration = this.#project.getSourceFileOrThrow(
+				Path.join(this.#projectPath, functionPath.source)
+			).getFunctionOrThrow(functionPath.name);
 			const cfg = generateCfgFromFunction(declaration);
 			compactCfg(cfg);
 			functionData = {declaration, cfg, breakpoints: getBreakpointsFromCfg(cfg)};
@@ -569,7 +574,9 @@ export default class Executor {
 		const key = makeResolvedFunctionPathKey(functionPath);
 		if (setFunctions.has(key)) return;
 		setFunctions.add(key);
-		const sourceFilePath = this.#project.getSourceFileOrThrow(functionPath.source).getFilePath();
+		const sourceFilePath = this.#project.getSourceFileOrThrow(
+			Path.join(this.#projectPath, functionPath.source)
+		).getFilePath();
 		const compiledPath = this.#getCompiledFilePath(sourceFilePath);
 		const compiledUrl = Url.pathToFileURL(compiledPath).toString();
 		const sourceMapSourcePath = Path.relative(Path.dirname(compiledPath), sourceFilePath).replaceAll('\\', '/');

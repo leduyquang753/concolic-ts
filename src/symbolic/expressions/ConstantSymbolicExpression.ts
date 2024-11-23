@@ -12,7 +12,7 @@ export default class ConstantSymbolicExpression extends SymbolicExpression {
 		this.value = value;
 	}
 
-	override generateSmt(): {expression: string, type: BaseSymbolicType} {
+	override generateSmt(): {expression: string, type: BaseSymbolicType, additionalConstraints: SymbolicExpression[]} {
 		let expression: string;
 		switch (typeof this.value) {
 			case "number":
@@ -27,7 +27,7 @@ export default class ConstantSymbolicExpression extends SymbolicExpression {
 			default:
 				throw new Error(`Unhandled constant value type ${typeof this.value}.`);
 		}
-		return {expression, type: this.#getBaseType()};
+		return {expression, type: this.#getBaseType(), additionalConstraints: []};
 	}
 
 	override getChildExpressions(): SymbolicExpression[] {

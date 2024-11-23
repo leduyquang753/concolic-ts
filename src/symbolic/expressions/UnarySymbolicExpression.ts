@@ -17,13 +17,14 @@ export default class UnarySymbolicExpression extends SymbolicExpression {
 		this.operand = operand;
 	}
 
-	override generateSmt(): {expression: string, type: BaseSymbolicType} {
+	override generateSmt(): {expression: string, type: BaseSymbolicType, additionalConstraints: SymbolicExpression[]} {
 		const operandSmt = this.operand.generateSmt();
 		if (operandSmt.type === BaseSymbolicType.STRING)
 			throw new Error("Unary string operations are not yet supported.");
 		return {
 			expression: `(${smtOperatorMap[this.operator] ?? this.operator} ${operandSmt.expression})`,
-			type: this.operator === "!" ? BaseSymbolicType.BOOLEAN : operandSmt.type
+			type: this.operator === "!" ? BaseSymbolicType.BOOLEAN : operandSmt.type,
+			additionalConstraints: [...operandSmt.additionalConstraints]
 		};
 	}
 

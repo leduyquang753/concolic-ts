@@ -15,9 +15,9 @@ export default class VariableSymbolicExpression extends SymbolicExpression {
 		this.type = type;
 	}
 
-	override generateSmt(): {expression: string, type: BaseSymbolicType} {
+	override generateSmt(): {expression: string, type: BaseSymbolicType, additionalConstraints: SymbolicExpression[]} {
 		if (!this.isParameter) throw new TypeError("Symbolic variable is unresolved.");
-		return {expression: this.symbolicName, type: this.type};
+		return {expression: this.symbolicName, type: this.type, additionalConstraints: []};
 	}
 
 	override getChildExpressions(): SymbolicExpression[] {

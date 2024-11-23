@@ -13,7 +13,7 @@ export default class ObjectSymbolicExpression extends SymbolicExpression {
 		this.value = value;
 	}
 
-	override generateSmt(): {expression: string, type: BaseSymbolicType} {
+	override generateSmt(): {expression: string, type: BaseSymbolicType, additionalConstraints: SymbolicExpression[]} {
 		throw new TypeError("Object symbolic expression used in SMT expression.");
 	}
 

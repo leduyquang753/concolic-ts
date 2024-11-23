@@ -20,8 +20,8 @@ export function* iterateCfg(cfg: Cfg): Generator<CfgNode, undefined, undefined> 
 		const node = nodeStack.pop()!;
 		if (visitedNodeIds.has(node.id)) continue;
 		visitedNodeIds.add(node.id);
-		if (node.primaryNext !== null) nodeStack.push(node.primaryNext);
 		if (node.secondaryNext !== null) nodeStack.push(node.secondaryNext);
+		if (node.primaryNext !== null) nodeStack.push(node.primaryNext);
 		yield node;
 	}
 }

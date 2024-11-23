@@ -17,6 +17,7 @@ import CfgNodeKind from "#r/cfg/CfgNodeKind";
 import {generateCfgFromFunction} from "#r/cfg/CfgGenerator";
 import BaseSymbolicType from "#r/symbolic/BaseSymbolicType";
 import SymbolicExecutor from "#r/symbolic/SymbolicExecutor";
+import BinarySymbolicExpression from "#r/symbolic/expressions/BinarySymbolicExpression";
 import SymbolicExpression from "#r/symbolic/expressions/SymbolicExpression";
 import SymbolicExpressionKind from "#r/symbolic/expressions/SymbolicExpressionKind";
 import UnarySymbolicExpression from "#r/symbolic/expressions/UnarySymbolicExpression";
@@ -241,9 +242,12 @@ export default class Executor {
 		await websocket.waitForEvent("Debugger.paused");
 		websocket.sendCommand("Runtime.evaluate", {expression: "globalThis.__concolic$mockedValues = []"});
 		await websocket.getCommandResponse();
-		const breakpointMap: {[id: string]: Breakpoint} = {};
+		const breakpointLocationMap: {[key: string]: Breakpoint[]} = {};
+		const breakpointMap: {[id: string]: string} = {};
 		const functionsWithSetBreakpoints = new Set<string>();
-		await this.#setBreakpoints(this.#functionToTest, functionsWithSetBreakpoints, websocket, breakpointMap);
+		await this.#setBreakpoints(
+			this.#functionToTest, functionsWithSetBreakpoints, websocket, breakpointLocationMap, breakpointMap
+		);
 		console.log("Set initial breakpoints, now running.");
 
 		const functionToTest = this.#project.getSourceFileOrThrow(this.#functionToTest.source)
@@ -325,7 +329,8 @@ export default class Executor {
 							);
 							parentCallPathString = JSON.stringify(parentCallPathStack);
 							await this.#setBreakpoints(
-								calledFunctionInfo.path, functionsWithSetBreakpoints, websocket, breakpointMap
+								calledFunctionInfo.path, functionsWithSetBreakpoints, websocket,
+								breakpointLocationMap, breakpointMap
 							);
 							cfg = this.#getFunctionData(calledFunctionInfo.path).cfg;
 							currentCfgNode = cfg.beginNode.primaryNext!;
@@ -336,7 +341,7 @@ export default class Executor {
 					}
 				}
 				symbolicExecutor.executeNode(currentCodeNode);
-				if (currentCodeNode === currentCfgNode.tsNode!) break;
+				if (currentCfgNode !== cfg.endNode && currentCodeNode === currentCfgNode.tsNode!) break;
 				const next = getNextNodeToExecute(currentCodeNode);
 				if (next === null) {
 					if (parentCalls.length === 0) throw new Error("Code ended prematurely.");
@@ -357,8 +362,10 @@ export default class Executor {
 				const event = await websocket.waitForAnyEvent();
 				if (event.method === "Debugger.paused") {
 					shouldResume = true;
-					const hitBreakpoint = breakpointMap[event.params.hitBreakpoints[0]];
-					if (hitBreakpoint.cfgNode === currentCfgNode) {
+					const hitBreakpoint = breakpointLocationMap[breakpointMap[event.params.hitBreakpoints[0]]].find(
+						breakpoint => breakpoint.cfgNode === currentCfgNode
+					);
+					if (hitBreakpoint !== undefined) {
 						if (newExecutionPath.length < this.#currentExecutionPath.length) {
 							const currentEntry = this.#currentExecutionPath[newExecutionPath.length];
 							if (
@@ -418,40 +425,47 @@ export default class Executor {
 			const usedParameters = new Set<string>();
 			for (const condition of conditions) collectUsedParametersFromCondition(condition, usedParameters);
 			let smtString = "(set-option :pp.decimal true)\n(set-option :pp.decimal_precision 20)\n";
-			let constraintsHaveStrings = false;
-			for (const parameter of usedParameters) {
+			for (const parameter of usedParameters)
 				smtString += generateSmtForParameter(parameter, this.#parameterInfo);
-				constraintsHaveStrings ||= this.#parameterInfo.get(parameter)!.baseType === BaseSymbolicType.STRING;
-			}
 			{
 				let remainingConstraints = [...conditions];
 				while (remainingConstraints.length !== 0) {
 					const constraint = remainingConstraints.shift()!;
-					smtString += `(assert ${constraint.generateSmt().expression})\n`;
-					remainingConstraints.push(...constraint.getAdditionalConstraints());
+					const constraintSmt = constraint.generateSmt();
+					smtString += `(assert ${constraintSmt.expression})\n`;
+					remainingConstraints.push(...constraintSmt.additionalConstraints);
+					for (const softConstraint of getSoftConstraintsFromConstraint(constraint))
+						smtString += `(assert-soft ${softConstraint.generateSmt().expression})\n`;
 				}
 			}
-			smtString += (
-				(constraintsHaveStrings ? "(check-sat)" : "(check-sat-using qfnra-nlsat)")
-				+ "\n(get-model)\n"
-			);
-			const smtFilePath = Path.join(this.#projectPath, "smt.txt");
-			FileSystem.writeFileSync(smtFilePath, smtString, "utf8");
 			console.log("Solving constraints...");
-			smtString = await new Promise(resolve => { ChildProcess.exec(
+			const smtFilePath = Path.join(this.#projectPath, "smt.txt");
+			FileSystem.writeFileSync(smtFilePath, smtString + "(check-sat)\n(get-model)\n", "utf8");
+			let smtResult: string = await new Promise(resolve => { ChildProcess.exec(
 				`"${config.pathToZ3}" "${smtFilePath}"`, {cwd: this.#projectPath},
 				(error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => {
 					resolve(stdout.toString());
 				}
 			); });
-			if (smtString.substring(0, 5) === "unsat") {
+			if (smtResult.substring(0, 5) !== "unsat" && smtResult.substring(0, 3) !== "sat") {
+				FileSystem.writeFileSync(
+					smtFilePath, smtString + "(check-sat-using qfnra-nlsat)\n(get-model)\n", "utf8"
+				);
+				smtResult = await new Promise(resolve => { ChildProcess.exec(
+					`"${config.pathToZ3}" "${smtFilePath}"`, {cwd: this.#projectPath},
+					(error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => {
+						resolve(stdout.toString());
+					}
+				); });
+			}
+			if (smtResult.substring(0, 5) === "unsat") {
 				console.log("No input satisfies the constraints for the new path. Generating a new one.");
 				continue;
-			} else if (smtString.substring(0, 3) !== "sat") {
+			} else if (smtResult.substring(0, 3) !== "sat") {
 				throw new Error("Failed to solve constraints.");
 			}
 			this.#currentExecutionPath = suggestedExecutionPath;
-			const flatInputObject = Object.fromEntries([...smtString.matchAll(
+			const flatInputObject = Object.fromEntries([...smtResult.matchAll(
 				/\(define-fun ([\w_.@$]+) \(\) (?:Real[^\d\(]+\(?((?:- )?[\d\.]+)\??|String[^"]+"([^"]*)"|Bool[^\w]+(\w+))\)/g
 			)].map(entry => {
 				const name = entry[1];
@@ -549,8 +563,8 @@ export default class Executor {
 	}
 
 	async #setBreakpoints(
-		functionPath: ResolvedFunctionPath, setFunctions: Set<string>,
-		websocket: DebuggerWebsocket, breakpointMap: {[id: string]: Breakpoint}
+		functionPath: ResolvedFunctionPath, setFunctions: Set<string>, websocket: DebuggerWebsocket,
+		breakpointLocationMap: {[key: string]: Breakpoint[]}, breakpointMap: {[id: string]: string}
 	): Promise<void> {
 		const key = makeResolvedFunctionPathKey(functionPath);
 		if (setFunctions.has(key)) return;
@@ -566,13 +580,19 @@ export default class Executor {
 			this.#sourceFileDataMap.set(functionPath.source, sourceFileData);
 		}
 		for (const breakpoint of this.#getFunctionData(functionPath).breakpoints) {
+			const key = `${compiledUrl}|${breakpoint.line}|${breakpoint.column}`;
+			if (key in breakpointLocationMap) {
+				breakpointLocationMap[key].push(breakpoint);
+				continue;
+			}
 			const compiledLocation = sourceFileData.sourceMap.generatedPositionFor({
 				source: sourceMapSourcePath, line: breakpoint.line, column: breakpoint.column - 1
 			});
 			websocket.sendCommand("Debugger.setBreakpointByUrl", {
 				url: compiledUrl, lineNumber: compiledLocation.line! - 1, columnNumber: compiledLocation.column
 			});
-			breakpointMap[(await websocket.getCommandResponse()).breakpointId as string] = breakpoint;
+			breakpointLocationMap[key] = [breakpoint];
+			breakpointMap[(await websocket.getCommandResponse()).breakpointId as string] = key;
 		}
 	}
 }
@@ -834,4 +854,22 @@ function generateSmtForParameter(name: string, parameterInfo: Map<string, Parame
 		default:
 			throw new Error("Unhandled base symbolic type.");
 	}
+}
+
+// Temporary solution for nudging values away from the equal value in ≥ and ≤ comparisons.
+function getSoftConstraintsFromConstraint(constraint: SymbolicExpression): SymbolicExpression[] {
+	if (constraint.kind === SymbolicExpressionKind.BINARY) {
+		const binaryExpression = constraint as BinarySymbolicExpression;
+		if (!(binaryExpression.operator === ">=" || binaryExpression.operator === "<=")) return [];
+		return [new BinarySymbolicExpression("!==", binaryExpression.leftOperand, binaryExpression.rightOperand)];
+	}
+	if (constraint.kind === SymbolicExpressionKind.UNARY) {
+		const unaryExpression = constraint as UnarySymbolicExpression;
+		if (unaryExpression.operator !== "!" || unaryExpression.operand.kind !== SymbolicExpressionKind.BINARY)
+			return [];
+		const binaryOperand = unaryExpression.operand as BinarySymbolicExpression;
+		if (!(binaryOperand.operator === ">" || binaryOperand.operator === "<")) return [];
+		return [new BinarySymbolicExpression("!==", binaryOperand.leftOperand, binaryOperand.rightOperand)];
+	}
+	return [];
 }

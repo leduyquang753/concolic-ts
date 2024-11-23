@@ -55,7 +55,8 @@ export default class TestabilityAnalysis {
 }
 
 function isSupportedPrimitiveType(type: Ts.Type): boolean {
-	return type.isString() || type.isStringLiteral()
+	return type.isVoid()
+		|| type.isString() || type.isStringLiteral()
 		|| type.isNumber() || type.isNumberLiteral()
 		|| type.isBoolean() || type.isBooleanLiteral();
 }

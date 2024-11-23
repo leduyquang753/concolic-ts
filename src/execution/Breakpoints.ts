@@ -91,7 +91,7 @@ function getNearestBreakableLocation(tsNode: Ts.Node): Location {
 	let candidate = tsNode.getNextSibling();
 	while (candidate === undefined) {
 		const parent = currentNode.getParent();
-		if (parent === undefined || parent.getKind() === Ts.SyntaxKind.FunctionDeclaration)
+		if (parent === undefined)
 			throw new Error("Failed to find breakable location of node.");
 		switch (parent.getKind()) {
 			case Ts.SyntaxKind.ForStatement:
@@ -100,9 +100,13 @@ function getNearestBreakableLocation(tsNode: Ts.Node): Location {
 			case Ts.SyntaxKind.WhileStatement:
 				candidate = parent;
 				break;
+			case Ts.SyntaxKind.FunctionDeclaration:
+				candidate = (parent as Ts.FunctionDeclaration).getBody()!.getLastToken();
+				break;
 			default:
 				currentNode = parent;
-				if (currentNode.getKind() !== Ts.SyntaxKind.SyntaxList) candidate = currentNode.getNextSibling();
+				if (!(currentNode.getKind() === Ts.SyntaxKind.SyntaxList || currentNode.getKind() === Ts.SyntaxKind.Block))
+					candidate = currentNode.getNextSibling();
 				break;
 		}
 	}

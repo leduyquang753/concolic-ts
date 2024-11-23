@@ -268,6 +268,7 @@ export default class SymbolicExecutor {
 			}
 			case Ts.SyntaxKind.CallExpression: {
 				const callExpression = expression as Ts.CallExpression;
+				if (callExpression.getType().isVoid()) return new ConstantSymbolicExpression(undefined);
 				const returnVariable = this.variableTable.get(makeVariableKey("[call]", callExpression));
 				if (returnVariable !== undefined) return returnVariable.value;
 				const functionExpression = callExpression.getExpression();

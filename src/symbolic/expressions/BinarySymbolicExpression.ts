@@ -43,7 +43,7 @@ export default class BinarySymbolicExpression extends SymbolicExpression {
 		this.rightOperand = rightOperand;
 	}
 
-	override generateSmt(): {expression: string, type: BaseSymbolicType} {
+	override generateSmt(): {expression: string, type: BaseSymbolicType, additionalConstraints: SymbolicExpression[]} {
 		const leftSmt = this.leftOperand.generateSmt();
 		const rightSmt = this.rightOperand.generateSmt();
 		if (leftSmt.type !== rightSmt.type)
@@ -61,18 +61,17 @@ export default class BinarySymbolicExpression extends SymbolicExpression {
 			default:
 				throw new Error("Unhandled base symbolic type.");
 		}
+		const additionalConstraints = [...leftSmt.additionalConstraints, ...rightSmt.additionalConstraints];
+		if (this.operator === "/") additionalConstraints.push(
+			new BinarySymbolicExpression("!==", this.rightOperand, new ConstantSymbolicExpression(0))
+		);
 		return {
 			expression: `(${smtOperator} `
 				+ `${shouldReverse ? rightSmt.expression : leftSmt.expression} `
 				+ `${shouldReverse ? leftSmt.expression : rightSmt.expression})`,
-			type: comparisonOperators.has(this.operator) ? BaseSymbolicType.BOOLEAN : leftSmt.type
+			type: comparisonOperators.has(this.operator) ? BaseSymbolicType.BOOLEAN : leftSmt.type,
+			additionalConstraints
 		};
-	}
-
-	override getAdditionalConstraints(): SymbolicExpression[] {
-		if (this.operator === "/")
-			return [new BinarySymbolicExpression("!==", this.rightOperand, new ConstantSymbolicExpression(0))];
-		return [];
 	}
 
 	override getChildExpressions(): SymbolicExpression[] {

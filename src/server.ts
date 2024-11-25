@@ -52,8 +52,10 @@ server.register(FastifyWebsocket, {options: {maxPayload: 1 << 10}});
 server.register(FastifyMultipart, {limits: {files: 1, fileSize: 100 << 20}, attachFieldsToBody: "keyValues"});
 server.register(FastifyStatic, {root: config.storagePath, serve: false});
 
-server.get("/status", {websocket: true}, (socket, request) => {
-	statusStore.onSocketConnection(socket);
+server.register(async server => {
+	server.get("/status", {websocket: true}, (socket, request) => {
+		statusStore.onSocketConnection(socket);
+	});
 });
 
 function getProjectInfo(projectId: string): ProjectInfo {

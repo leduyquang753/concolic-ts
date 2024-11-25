@@ -11,11 +11,6 @@ import SymbolicExpressionKind from "./expressions/SymbolicExpressionKind.js";
 import UnarySymbolicExpression from "./expressions/UnarySymbolicExpression.js";
 import VariableSymbolicExpression from "./expressions/VariableSymbolicExpression.js";
 
-type SymbolicVariable = {
-	scopeLevel: number,
-	previousScopeLevel: number | null,
-	value: SymbolicExpression
-};
 type FunctionCall = {
 	scopeLevel: number,
 	returnValueKey: string
@@ -41,9 +36,9 @@ const assignmentOperatorMap: {[assignmentOperator: string]: string | undefined} 
 };
 
 export default class SymbolicExecutor {
-	variableTable: Map<string, SymbolicVariable> = new Map<string, SymbolicVariable>();
+	variableTable: Map<string, SymbolicExpression> = new Map<string, SymbolicExpression>();
 	scopeStack: string[][] = [];
-	shadowedVariableStack: Map<string, SymbolicVariable>[] = [];
+	shadowedVariableStacks: Map<string, SymbolicExpression[]> = new Map<string, SymbolicExpression[]>();
 	functionCalls: FunctionCall[] = [];
 
 	#parameterInfo: Map<string, ParameterType>;
@@ -88,33 +83,32 @@ export default class SymbolicExecutor {
 
 	startScope(): void {
 		this.scopeStack.push([]);
-		this.shadowedVariableStack.push(new Map<string, SymbolicVariable>());
 	}
 
 	endScope(): void {
 		for (const key of this.scopeStack.pop()!) {
-			const previousScopeLevel = this.variableTable.get(key)!.previousScopeLevel;
-			if (previousScopeLevel === null) {
+			const shadowedStack = this.shadowedVariableStacks.get(key);
+			if (shadowedStack === undefined) {
 				this.variableTable.delete(key);
 			} else {
-				const shadowedFrame = this.shadowedVariableStack[previousScopeLevel];
-				this.variableTable.set(key, shadowedFrame.get(key)!);
-				shadowedFrame.delete(key);
+				this.variableTable.set(key, shadowedStack.pop()!);
+				if (shadowedStack.length === 0) this.shadowedVariableStacks.delete(key);
 			}
 		}
-		this.shadowedVariableStack.pop();
 	}
 
 	addVariable(key: string, value: SymbolicExpression): void {
 		const scopeLevel = this.scopeStack.length - 1;
 		const shadowedVariable = this.variableTable.get(key);
-		if (shadowedVariable !== undefined)
-			this.shadowedVariableStack[shadowedVariable.scopeLevel].set(key, shadowedVariable);
-		this.variableTable.set(key, {
-			scopeLevel,
-			previousScopeLevel: shadowedVariable === undefined ? null : shadowedVariable.scopeLevel,
-			value
-		});
+		if (shadowedVariable !== undefined) {
+			let shadowedStack = this.shadowedVariableStacks.get(key);
+			if (shadowedStack === undefined) {
+				shadowedStack = [];
+				this.shadowedVariableStacks.set(key, shadowedStack);
+			}
+			shadowedStack.push(shadowedVariable);
+		}
+		this.variableTable.set(key, value);
 		this.scopeStack[scopeLevel].push(key);
 	}
 
@@ -213,7 +207,7 @@ export default class SymbolicExecutor {
 			case Ts.SyntaxKind.Identifier:
 				if (!external) {
 					const value = this.variableTable.get(expression.getText());
-					if (value !== undefined) return value.value.clone();
+					if (value !== undefined) return value.clone();
 				}
 				const declaration = (expression as Ts.Identifier).getSymbolOrThrow().getDeclarations().find(
 					Ts.Node.isVariableDeclaration
@@ -270,7 +264,7 @@ export default class SymbolicExecutor {
 				const callExpression = expression as Ts.CallExpression;
 				if (callExpression.getType().isVoid()) return new ConstantSymbolicExpression(undefined);
 				const returnVariable = this.variableTable.get(makeVariableKey("[call]", callExpression));
-				if (returnVariable !== undefined) return returnVariable.value;
+				if (returnVariable !== undefined) return returnVariable;
 				const functionExpression = callExpression.getExpression();
 				if (functionExpression.getText() === "__concolic$mock") {
 					const valueName = `__concolic$mock${this.#nextMockedCallNumber}`;
@@ -411,10 +405,10 @@ export default class SymbolicExecutor {
 				const shorthandPropertyAssignment = element as Ts.ShorthandPropertyAssignment;
 				const name = shorthandPropertyAssignment.getName();
 				const defaultExpression = shorthandPropertyAssignment.getObjectAssignmentInitializer();
-				this.variableTable.get(name)!.value = source.value[name] ?? (defaultExpression === undefined
+				this.variableTable.set(name, source.value[name] ?? (defaultExpression === undefined
 					? new ConstantSymbolicExpression(undefined)
 					: this.evaluateExpression(defaultExpression, true, false)
-				);
+				));
 				extractedNames.add(name);
 				break;
 			}
@@ -448,7 +442,7 @@ export default class SymbolicExecutor {
 	#executeAssignment(target: Ts.Expression, value: SymbolicExpression): void {
 		switch (target.getKind()) {
 			case Ts.SyntaxKind.Identifier:
-				this.variableTable.get(target.getText())!.value = value;
+				this.variableTable.set(target.getText(), value);
 				break;
 			case Ts.SyntaxKind.PropertyAccessExpression: {
 				const propertyAccessExpression = target as Ts.PropertyAccessExpression;

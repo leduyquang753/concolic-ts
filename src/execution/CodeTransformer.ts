@@ -8,13 +8,6 @@ import CoverageKind from "./CoverageKind.js";
 
 type ExtractionResult = {precedingCode: string, newExpression: string};
 
-let nextGeneratedVariableId = 0;
-
-function generateVariableName() {
-	++nextGeneratedVariableId;
-	return `__concolic\$${nextGeneratedVariableId}`;
-}
-
 function ensureCodeBlock(code: string, isStandalone: boolean): string {
 	return isStandalone ? `{\n${code}\n}\n` : code;
 }
@@ -26,6 +19,7 @@ export default class CodeTransformer {
 	#mockedFunctionKeys: Set<string> = new Set<string>();
 	#project!: Ts.Project;
 	#currentFileHasMocks: boolean = false;
+	#nextGeneratedVariableId = 0;
 
 	constructor(
 		originalPath: string, destinationPath: string, coverageKind: CoverageKind,
@@ -278,7 +272,7 @@ export default class CodeTransformer {
 				if (this.#coverageKind === CoverageKind.PREDICATE) {
 					const operator = binaryExpression.getOperatorToken().getText();
 					if (operator === "&&") {
-						const generatedVariableName = generateVariableName();
+						const generatedVariableName = this.#generateVariableName();
 						return {
 							precedingCode: (
 								(extractedLeft === null ? "" : extractedLeft.precedingCode)
@@ -300,7 +294,7 @@ export default class CodeTransformer {
 						};
 					}
 					if (operator === "||") {
-						const generatedVariableName = generateVariableName();
+						const generatedVariableName = this.#generateVariableName();
 						return {
 							precedingCode: (
 								(extractedLeft === null ? "" : extractedLeft.precedingCode)
@@ -350,7 +344,7 @@ export default class CodeTransformer {
 					= this.#extractConditionalExpression(conditionalExpression.getWhenTrue());
 				const extractedFalseExpression
 					= this.#extractConditionalExpression(conditionalExpression.getWhenFalse());
-				const generatedVariableName = generateVariableName();
+				const generatedVariableName = this.#generateVariableName();
 				return {
 					precedingCode: (
 						(extractedCondition === null ? "" : extractedCondition.precedingCode)
@@ -458,5 +452,10 @@ export default class CodeTransformer {
 			}
 		}
 		return null;
+	}
+
+	#generateVariableName() {
+		++this.#nextGeneratedVariableId;
+		return `__concolic\$${this.#nextGeneratedVariableId}`;
 	}
 }

@@ -27,7 +27,7 @@ export default class BranchSelector {
 	#executionTreeRoot: ExecutionNode;
 	#coveredContexts: Set<string> = new Set<string>();
 
-	#contextLength: number = 0;
+	#contextLength: number = 1;
 	#currentSearchDepth: number = 0;
 	#currentNodes: ExecutionNode[] = [];
 	#nextNodes: ExecutionNode[] = [];

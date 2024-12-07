@@ -86,7 +86,8 @@ export default class Executor {
 
 	// Current limitation: must only be invoked once per instance.
 	async execute(progressCallback: (testCount: number, coverage: number) => void): Promise<{
-		testCases: TestCase[], testDriver: string, coverage: number, time: number
+		testCases: TestCase[], testDriver: string, coverage: number, time: number,
+		paths: number, coveredAmount: number, totalCoverageAmount: number
 	}> {
 		const cfg = this.#getFunctionData(this.#functionToTest).cfg;
 		if (this.#coverageKind === CoverageKind.STATEMENT) {
@@ -120,12 +121,14 @@ export default class Executor {
 		}
 		this.#startTime = new Date().getTime();
 		const testCases: TestCase[] = [];
+		let pathCount = 0;
 		let input: any | null = generateRandomInput(this.#parameterNames, this.#parameterInfo);
 		let newMockedCalls: InternalMockedCall[] = [];
 		while (input !== null) {
+			++pathCount;
 			progressCallback(testCases.length, this.#coveredAmount / this.#totalCoverageAmount);
 			console.log("Inputs: " + Object.entries(input).map(entry => `${entry[0]} = ${entry[1]}`).join("; "));
-			this.#generateDriverScript(input);
+			await this.#generateDriverScript(input);
 			const oldCoveredAmount = this.#coveredAmount;
 			const {mockedCalls, newValues} = await this.#executeFunctionAndGetNextInput(newMockedCalls);
 			if (testCases.length === 0 || this.#coveredAmount !== oldCoveredAmount) testCases.push({
@@ -135,7 +138,8 @@ export default class Executor {
 			if (newValues === null) input = null;
 			else ({input, mockedCalls: newMockedCalls} = newValues);
 		}
-		console.log("Done.");
+		const generationTime = (new Date().getTime() - this.#startTime) / 1000;
+		console.log(`Done after ${generationTime} seconds. ${pathCount} paths, ${testCases.length} test cases. Context size: ${this.#branchSelector.contextLength}. Covered ${this.#coveredAmount} / ${this.#totalCoverageAmount}.`);
 		let automockImports = "";
 		const automockModuleMap = new Map<string, string>();
 		let automockModuleNumber = 0;
@@ -187,7 +191,10 @@ export default class Executor {
 				})
 			}),
 			coverage: this.#coveredAmount / this.#totalCoverageAmount * 100,
-			time: (new Date().getTime() - this.#startTime) / 1000
+			time: generationTime,
+			paths: pathCount,
+			coveredAmount: this.#coveredAmount,
+			totalCoverageAmount: this.#totalCoverageAmount
 		};
 	}
 
@@ -530,9 +537,10 @@ export default class Executor {
 			: isCfgNodeBranchable(cfgNode) ? 1 : 0;
 	}
 
-	#generateDriverScript(input: any): void {
+	async #generateDriverScript(input: any): Promise<void> {
+		const driverPath = Path.join(this.#projectPath, "__concolic.ts");
 		FileSystem.writeFileSync(
-			Path.join(this.#projectPath, "__concolic.ts"),
+			driverPath,
 			TemplateFile.render(this.#concolicDriverTemplate, {
 				sourceFilePath: JSON.stringify("./" + this.#functionToTest.source.replace(/\.ts$/, ".js")),
 				functionName: this.#functionToTest.name,
@@ -540,9 +548,9 @@ export default class Executor {
 			),
 			"utf8"
 		);
-		ChildProcess.execSync(
-			"tsc --sourceMap true --inlineSourceMap false", {cwd: this.#projectPath, stdio: "ignore"}
-		);
+		const driverSourceFile = this.#project.getSourceFileOrThrow(driverPath);
+		await driverSourceFile.refreshFromFileSystem();
+		if ((await driverSourceFile.emit()).getEmitSkipped()) throw new Error("Compilation failed.");
 	}
 
 	#getCompiledFilePath(sourceFilePath: string): string {
@@ -772,8 +780,21 @@ function collectParametersFromType(
 	name: string, tsType: Ts.Type,
 	parameterNames: Set<string>, parameterInfo: Map<string, ParameterType>
 ): void {
-	if (tsType.isObject() || tsType.isInterface()) {
-		for (const property of tsType.getProperties()) collectParametersFromType(
+	const properties: Ts.Symbol[] | null
+		= tsType.isObject() || tsType.isInterface() ? tsType.getProperties()
+		: tsType.isUnion() ? tsType.getUnionTypes().every(
+			subtype => subtype.isObject() || subtype.isInterface()
+		)
+			? tsType.getUnionTypes().flatMap(subtype => subtype.getProperties())
+			: null
+		: tsType.isIntersection() ? tsType.getIntersectionTypes().every(
+			subtype => subtype.isObject() || subtype.isInterface()
+		)
+			? tsType.getIntersectionTypes().flatMap(subtype => subtype.getProperties())
+			: null
+		: null;
+	if (properties !== null) {
+		for (const property of properties) collectParametersFromType(
 			name + '.' + property.getName(), property.getDeclarations()[0].getType(), parameterNames, parameterInfo
 		);
 	} else {

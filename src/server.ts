@@ -1,3 +1,4 @@
+import FastifyCors from "@fastify/cors";
 import FastifyMultipart from "@fastify/multipart";
 import FastifyStatic from "@fastify/static";
 import FastifyWebsocket from "@fastify/websocket";
@@ -48,6 +49,7 @@ const shescape = new Shescape({shell: true});
 
 const server = Fastify();
 
+server.register(FastifyCors, {origin: true});
 server.register(FastifyWebsocket, {options: {maxPayload: 1 << 10}});
 server.register(FastifyMultipart, {limits: {files: 1, fileSize: 100 << 20}, attachFieldsToBody: "keyValues"});
 server.register(FastifyStatic, {root: config.storagePath, serve: false});
@@ -305,7 +307,8 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 			coverageKind: string,
 			coverageTarget: number,
 			generationResults: {
-				filePath: string, functionName: string, testCases: TestCase[], coverage: number, time: number
+				filePath: string, functionName: string, testCases: TestCase[], coverage: number, time: number,
+				paths: number, coveredAmount: number, totalCoverageAmount: number
 			}[]
 		} = {
 			status: "succeeded",
@@ -320,8 +323,13 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 			statusStore.updateTaskProgress(functionProgressString + "Transforming code...");
 			const mockedFunctions = func.mockedFunctions ?? [];
 			await new CodeTransformer(originalPath, concolicPath, coverageKind, mockedFunctions).transform();
-			const project = new Ts.Project({tsConfigFilePath: Path.join(concolicPath, "tsconfig.json")});
-			const {testCases, testDriver, coverage, time} = await new Executor(
+			FileSystem.writeFileSync(Path.join(concolicPath, "__concolic.ts"), "", "utf8");
+			const project = new Ts.Project({
+				tsConfigFilePath: Path.join(concolicPath, "tsconfig.json"),
+				compilerOptions: {incremental: true, sourceMap: true, inlineSourceMap: false, noEmitOnError: true}
+			});
+			if ((await project.emit()).getEmitSkipped()) throw new Error("Compilation failed.");
+			const executionResult = await new Executor(
 				concolicPath, project, {source: func.filePath, container: null, name: func.functionName},
 				func.concolicDriverTemplate ?? FileSystem.readFileSync(
 					Path.join(config.defaultsPath, "concolicDriverTemplate.ts.txt"), "utf8"
@@ -340,9 +348,12 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 				);
 			});
 			result.generationResults.push({
-				filePath: func.filePath, functionName: func.functionName, testCases, coverage, time
+				filePath: func.filePath, functionName: func.functionName, ...executionResult
 			});
-			FileSystem.writeFileSync(Path.join(testPath, `concolic${functionNumber}.spec.ts`), testDriver, "utf8");
+			FileSystem.writeFileSync(
+				Path.join(testPath, `concolic${functionNumber}.spec.ts`),
+				executionResult.testDriver, "utf8"
+			);
 			++functionNumber;
 		}
 

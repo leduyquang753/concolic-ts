@@ -32,6 +32,10 @@ export default class BranchSelector {
 	#currentNodes: ExecutionNode[] = [];
 	#nextNodes: ExecutionNode[] = [];
 
+	get contextLength(): number {
+		return this.#contextLength;
+	}
+
 	constructor(maxSearchDepth: number, maxContextLength: number) {
 		this.#maxSearchDepth = maxSearchDepth;
 		this.#maxContextLength = maxContextLength;

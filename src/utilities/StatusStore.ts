@@ -25,9 +25,9 @@ export default class StatusStore {
 			listener.send(JSON.stringify({status: "taskRunning", message: progressMessage}));
 	}
 
-	finishTask(): void {
+	finishTask(success: boolean = true): void {
 		for (const listener of this.#listeners) {
-			listener.send(JSON.stringify({status: "taskDone"}));
+			listener.send(JSON.stringify({status: "taskDone", success}));
 			listener.close();
 		}
 		this.#listeners = [];

@@ -7,6 +7,7 @@ import {Buffer} from "buffer";
 import * as ChildProcess from "child_process";
 import Fastify from "fastify";
 import * as FileSystem from "fs";
+import * as FileSystemPromises from "fs/promises";
 import * as Path from "path";
 import {Shescape} from "shescape";
 import * as Ts from "ts-morph";
@@ -35,7 +36,7 @@ type FolderEntry = {
 	name: string,
 	entries: (FolderEntry | SourceFileEntry)[]
 };
-type ProjectBasicInfo = {id: string, name: string};
+type ProjectBasicInfo = {id: string, name: string, lastOperationTime: number};
 type ProjectStatus = {status: "new"}
 	| {status: "taskRunning", taskId: string, taskKind: string}
 	| {status: "generated", succeeded: boolean};
@@ -66,6 +67,7 @@ function getProjectInfo(projectId: string): ProjectInfo {
 	const resultPath = Path.join(projectPath, "generationResult.json");
 	return {
 		...(JSON.parse(FileSystem.readFileSync(Path.join(projectPath, "info.json"), "utf8")) as ProjectBasicInfo),
+		lastOperationTime: Number(FileSystem.readFileSync(Path.join(projectPath, "lastOperationTime.txt"), "utf8")),
 		...(
 			currentTask === null || currentTask.projectId !== projectId
 			? FileSystem.existsSync(resultPath)
@@ -82,7 +84,9 @@ function getProjectInfo(projectId: string): ProjectInfo {
 }
 
 server.get("/projects", (request, reply) => {
-	return {projects: FileSystem.readdirSync(config.storagePath).map(id => getProjectInfo(id))};
+	const projects = FileSystem.readdirSync(config.storagePath).map(id => getProjectInfo(id));
+	projects.sort((p1, p2) => p2.lastOperationTime - p1.lastOperationTime);
+	return {projects};
 });
 
 server.post("/projects", {schema: {consumes: ["multipart/form-data"], body: {
@@ -105,11 +109,14 @@ server.post("/projects", {schema: {consumes: ["multipart/form-data"], body: {
 		projectPath = Path.join(config.storagePath, projectId);
 		if (!FileSystem.existsSync(projectPath)) break;
 	}
-	FileSystem.mkdirSync(projectPath);
-	FileSystem.writeFileSync(
+	await FileSystemPromises.mkdir(projectPath);
+	await FileSystemPromises.writeFile(
 		Path.join(projectPath, "info.json"),
 		JSON.stringify({id: projectId, name: params.name}),
 		"utf8"
+	);
+	await FileSystemPromises.writeFile(
+		Path.join(projectPath, "lastOperationTime.txt"), new Date().getTime().toString(), "utf8"
 	);
 	const taskId = generateId();
 	statusStore.putTask({projectId, taskId, taskKind: "upload"});
@@ -121,29 +128,51 @@ server.post("/projects", {schema: {consumes: ["multipart/form-data"], body: {
 	const testPath = Path.join(projectPath, "test");
 
 	statusStore.updateTaskProgress("Extracting files...");
-	FileSystem.mkdirSync(originalPath, {recursive: true});
+	await FileSystemPromises.mkdir(originalPath, {recursive: true});
 	const zipReader = new ZipJs.ZipReader(new ZipJs.BlobReader(new Blob([params.contents])));
 	for (const entry of await zipReader.getEntries()) {
 		if (entry.filename.match(/^node_modules(?:\/|$)/) !== null) continue;
 		const entryPath = Path.join(originalPath, entry.filename);
-		if (entry.directory) FileSystem.mkdirSync(entryPath);
-		else FileSystem.writeFileSync(entryPath, await entry.getData!(new ZipJs.Uint8ArrayWriter()));
+		if (entry.directory) await FileSystemPromises.mkdir(entryPath);
+		else await FileSystemPromises.writeFile(entryPath, await entry.getData!(new ZipJs.Uint8ArrayWriter()));
 	}
 
 	statusStore.updateTaskProgress("Setting up project...");
-	FileSystem.cpSync(originalPath, concolicPath, {recursive: true});
-	FileSystem.cpSync(originalPath, testPath, {recursive: true});
-	ChildProcess.spawnSync("npm", ["ci"], {cwd: originalPath, shell: true, stdio: "ignore"});
-	ChildProcess.spawnSync(
-		"npm", ["install", "@vitest/coverage-v8"], {cwd: originalPath, shell: true, stdio: "ignore"}
-	);
-	FileSystem.symlinkSync(Path.join(originalPath, "node_modules"), Path.join(concolicPath, "node_modules"));
-	FileSystem.symlinkSync(Path.join(originalPath, "node_modules"), Path.join(testPath, "node_modules"));
+	await FileSystemPromises.cp(originalPath, concolicPath, {recursive: true});
+	await FileSystemPromises.cp(originalPath, testPath, {recursive: true});
+	await new Promise<void>((resolve, reject) => {
+		const process = ChildProcess.spawn("npm", ["ci"], {cwd: originalPath, shell: true, stdio: "ignore"});
+		process.on("close", code => {
+			if (code === 0) resolve();
+			else reject(new Error("Failed to install dependencies."));
+		});
+	});
+	await new Promise<void>((resolve, reject) => {
+		const process = ChildProcess.spawn(
+			"npm", ["install", "@vitest/coverage-v8"], {cwd: originalPath, shell: true, stdio: "ignore"}
+		);
+		process.on("close", code => {
+			if (code === 0) resolve();
+			else reject(new Error("Failed to install dependencies."));
+		});
+	});
+	await FileSystemPromises.symlink(Path.join(originalPath, "node_modules"), Path.join(concolicPath, "node_modules"));
+	await FileSystemPromises.symlink(Path.join(originalPath, "node_modules"), Path.join(testPath, "node_modules"));
 	statusStore.finishTask();
 
 	})(); // Task body.
 
 	return {projectId, taskId};
+});
+
+server.get("/projects/:id", {schema: {params: projectIdSchema}}, (request, reply) => {
+	const projectId = (request.params as {id: string}).id;
+	const projectPath = Path.join(config.storagePath, projectId);
+	if (!FileSystem.existsSync(projectPath)) {
+		reply.statusCode = 404;
+		return {error: "Project not found."};
+	}
+	return getProjectInfo(projectId);
 });
 
 server.delete("/projects/:id", {schema: {params: projectIdSchema}}, (request, reply) => {
@@ -247,6 +276,9 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 		reply.statusCode = 404;
 		return {error: "Project not found."};
 	}
+	await FileSystemPromises.writeFile(
+		Path.join(projectPath, "lastOperationTime.txt"), new Date().getTime().toString(), "utf8"
+	);
 	const params = request.body as {
 		functionsToTest: {
 			filePath: string, functionName: string,
@@ -304,8 +336,8 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 
 		const result: {
 			status: string,
-			coverageKind: string,
-			coverageTarget: number,
+			coverageKind: string, coverageTarget: number,
+			maxSearchDepth: number, maxContextSize: number, timeLimit: number,
 			generationResults: {
 				filePath: string, functionName: string, testCases: TestCase[], coverage: number, time: number,
 				paths: number, coveredAmount: number, totalCoverageAmount: number
@@ -313,6 +345,7 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 		} = {
 			status: "succeeded",
 			coverageKind: params.coverageKind, coverageTarget: params.coverageTarget,
+			maxSearchDepth: params.maxSearchDepth, maxContextSize: params.maxContextSize, timeLimit: params.timeLimit,
 			generationResults: []
 		};
 		let functionNumber = 1;
@@ -342,7 +375,7 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 			).execute((currentTestCount, currentCoverage) => {
 				statusStore.updateTaskProgress(
 					functionProgressString
-					+ `Tests generated: ${currentTestCount}\n`
+					+ `Test data sets generated: ${currentTestCount}\n`
 					+ `Coverage: ${formatPercentage(currentCoverage)} `
 					+ `/ ${formatPercentage(params.coverageTarget / 100)}`
 				);
@@ -357,7 +390,7 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 			++functionNumber;
 		}
 
-		statusStore.updateTaskProgress("Running generated tests...");
+		statusStore.updateTaskProgress("Running generated test data...");
 		ChildProcess.spawnSync("npx", [
 			"vitest", "run", "concolic", "--root", shescape.quote(testPath),
 			"--coverage", "--coverage.reporter", "lcov",
@@ -366,6 +399,7 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 
 		// Save the result.
 		FileSystem.writeFileSync(Path.join(projectPath, "generationResult.json"), JSON.stringify(result), "utf8");
+		statusStore.finishTask();
 	} catch (e) {
 		console.error(e);
 		FileSystem.writeFileSync(Path.join(projectPath, "generationResult.json"), JSON.stringify({
@@ -373,8 +407,8 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 			exceptionMessage: (e as Error).message,
 			fullExceptionInfo: (e as Error).toString()
 		}), "utf8");
+		statusStore.finishTask(false);
 	}
-	statusStore.finishTask();
 
 	})(); // Task body.
 
@@ -382,16 +416,18 @@ server.post("/projects/:id/generate", {schema: {params: projectIdSchema, body: {
 });
 
 server.get("/projects/:id/result", {schema: {params: projectIdSchema}}, (request, reply) => {
-	const projectPath = Path.join(config.storagePath, (request.params as {id: string}).id);
+	const projectId = (request.params as {id: string}).id;
+	const projectPath = Path.join(config.storagePath, projectId);
 	if (!FileSystem.existsSync(projectPath)) {
 		reply.statusCode = 404;
 		return {error: "Project not found."};
 	}
 	const resultPath = Path.join(projectPath, "generationResult.json");
 	if (FileSystem.existsSync(resultPath)) return JSON.parse(FileSystem.readFileSync(resultPath, "utf8"));
-	return {status: FileSystem.existsSync(Path.join(projectPath, "generationInput.json"))
-		? "generating" : "notGenerated"
-	};
+	const currentTask = statusStore.currentTask;
+	if (currentTask !== null && currentTask.projectId === projectId)
+		return {status: "generating", taskId: currentTask.taskId, taskKind: currentTask.taskKind};
+	return {status: "notGenerated"};
 });
 server.get("/projects/:id/coverage/*", {schema: {params: projectIdSchema}}, (request, reply) => {
 	const projectId = (request.params as {id: string}).id;

@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@vitest/coverage-v8": "^2.1.5"
+  }
+}

@@ -1,0 +1,43 @@
+import { getHmrcRates } from "./hmrc";
+
+import type { StudentLoanPlan, Country } from "./types";
+
+// Calculates an individual's annual student loan repayments
+// Note that student loan repayments do not take into account the personal allowance in any way, it's a simple threshold system
+export function calculateStudentLoanRepayments(
+  country: Country, taxableAnnualIncome: number, studentLoanPlanNo: StudentLoanPlan
+): number {
+  const {
+    STUDENT_LOAN_PLAN_1_WEEKLY_THRESHOLD,
+    STUDENT_LOAN_PLAN_2_WEEKLY_THRESHOLD,
+    STUDENT_LOAN_PLAN_4_WEEKLY_THRESHOLD,
+    STUDENT_LOAN_PLAN_5_WEEKLY_THRESHOLD,
+    STUDENT_LOAN_POSTGRAD_WEEKLY_THRESHOLD,
+    STUDENT_LOAN_REPAYMENT_AMOUNT,
+    STUDENT_LOAN_REPAYMENT_AMOUNT_POSTGRAD,
+  } = getHmrcRates(country);
+  let studentLoanAnnualRepayments = 0;
+
+  // Repayments are a % of income over HMRC-specified thresholds (threshold amount depends on plan number)
+
+  let threshold: number = 0;
+
+  if (studentLoanPlanNo === 1) threshold = STUDENT_LOAN_PLAN_1_WEEKLY_THRESHOLD;
+  else if (studentLoanPlanNo === 2) threshold = STUDENT_LOAN_PLAN_2_WEEKLY_THRESHOLD;
+  else if (studentLoanPlanNo === 4) threshold = STUDENT_LOAN_PLAN_4_WEEKLY_THRESHOLD;
+  else if (studentLoanPlanNo === 5) threshold = STUDENT_LOAN_PLAN_5_WEEKLY_THRESHOLD;
+  else threshold = STUDENT_LOAN_POSTGRAD_WEEKLY_THRESHOLD;
+
+  const weeklySalary = taxableAnnualIncome / 52;
+  const repaymentAmount =
+    studentLoanPlanNo === 10
+      ? STUDENT_LOAN_REPAYMENT_AMOUNT_POSTGRAD
+      : STUDENT_LOAN_REPAYMENT_AMOUNT;
+
+  if (weeklySalary > threshold) {
+    studentLoanAnnualRepayments =
+      (weeklySalary - threshold) * repaymentAmount * 52;
+  }
+
+  return studentLoanAnnualRepayments;
+};

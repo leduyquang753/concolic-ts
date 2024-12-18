@@ -210,7 +210,7 @@ export default class Executor {
 		symbolicExecutor.addParametersFromFunctionDeclaration(functionToTest);
 		let cfg = this.#getFunctionData(this.#functionNameToTest).cfg;
 		let currentCfgNode: CfgNode = cfg.beginNode.primaryNext!;
-		let currentCodeNode = functionToTest.getBody()!;
+		let currentCodeNode = getNextNodeToExecute(functionToTest.getBody()!)!;
 		let pendingCallCfgNodes: CfgNode[] = [];
 		const parentCalls: {
 			cfg: Cfg, currentCfgNode: CfgNode, currentCodeNode: Ts.Node, pendingCallCfgNodes: CfgNode[]

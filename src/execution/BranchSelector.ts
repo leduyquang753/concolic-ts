@@ -125,7 +125,7 @@ export default class BranchSelector {
 			this.#nextNodes.push(...currentNode.children.filter(node => node !== null) as ExecutionNode[]);
 			if (currentNode.isCovered) continue;
 
-			let context = currentNode.cfgNode.id + ' ';
+			let context = makeBranchKey(currentNode.cfgNode, currentNode.isSecondaryBranch) + ' ';
 			{
 				const dominators = this.#dominatorMap.get(
 					makeBranchKey(currentNode.cfgNode, currentNode.isSecondaryBranch)
@@ -133,13 +133,14 @@ export default class BranchSelector {
 				let currentContextLength = 1;
 				let currentContextNode = currentNode.parent;
 				while (currentContextNode !== null && currentContextLength !== this.#contextLength) {
+					const branchKey = makeBranchKey(
+						currentContextNode.cfgNode, currentContextNode.isSecondaryBranch
+					);
 					if (currentContextNode !== this.#executionTreeRoot && (
 						currentContextNode.parentCalls !== currentNode.parentCalls
-						|| !dominators.has(makeBranchKey(
-							currentContextNode.cfgNode, currentContextNode.isSecondaryBranch
-						)
-					))) {
-						context += currentContextNode.cfgNode.id + " ";
+						|| !dominators.has(branchKey)
+					)) {
+						context += branchKey + " ";
 						++currentContextLength;
 					}
 					currentContextNode = currentContextNode.parent;
